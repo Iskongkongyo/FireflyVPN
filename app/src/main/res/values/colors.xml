@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary Colors - Gradient Blue/Purple Theme -->
+    <color name="primary">#6366F1</color>
+    <color name="primary_variant">#4F46E5</color>
+    <color name="primary_dark">#3730A3</color>
+    <color name="secondary">#8B5CF6</color>
+    <color name="secondary_variant">#7C3AED</color>
+    
+    <!-- Background Colors -->
+    <color name="background_dark">#0F172A</color>
+    <color name="background_dark_variant">#1E293B</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="surface_dark">#1E293B</color>
+    <color name="card_dark">#334155</color>
+    
+    <!-- Text Colors -->
+    <color name="text_primary">#F8FAFC</color>
+    <color name="text_secondary">#94A3B8</color>
+    <color name="text_tertiary">#64748B</color>
+    
+    <!-- Status Colors -->
+    <color name="connected_green">#22C55E</color>
+    <color name="connected_green_glow">#4ADE80</color>
+    <color name="disconnected_gray">#64748B</color>
+    <color name="connecting_yellow">#FACC15</color>
+    <color name="error_red">#EF4444</color>
+    
+    <!-- Button Colors -->
+    <color name="button_active">#6366F1</color>
+    <color name="button_inactive">#475569</color>
+    
+    <!-- Latency Colors -->
+    <color name="latency_good">#22C55E</color>
+    <color name="latency_medium">#FACC15</color>
+    <color name="latency_bad">#EF4444</color>
+    
+    <!-- Misc -->
+    <color name="divider">#334155</color>
+    <color name="ripple">#2A6366F1</color>
+</resources>

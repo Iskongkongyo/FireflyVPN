@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered VPN/Rocket icon -->
+    <group
+        android:translateX="27"
+        android:translateY="27">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M27,3.2c-8.3,0 -15,6.7 -15,15c0,10 10,23.3 15,28.8c5,-5.5 15,-18.8 15,-28.8C42,9.9 35.3,3.2 27,3.2zM27,24.2c-3.3,0 -6,-2.7 -6,-6s2.7,-6 6,-6s6,2.7 6,6S30.3,24.2 27,24.2z"/>
+    </group>
+</vector>

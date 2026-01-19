@@ -1,0 +1,34 @@
+# Add project specific ProGuard rules here.
+
+# Keep sing-box libbox classes
+-keep class io.nekohasekai.** { *; }
+-keep class libbox.** { *; }
+
+# Keep data models for Gson
+-keep class xyz.a202132.app.data.model.** { *; }
+-keep interface xyz.a202132.app.data.model.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*
+
+# Keep Room entities
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+
+# Retrofit
+-keepattributes Signature, InnerClasses, EnclosingMethod
+-keepattributes *Annotation*
+-keep class retrofit2.** { *; }
+-keepclasseswithmembers class * {
+    @retrofit2.http.* <methods>;
+}
+-keep interface xyz.a202132.app.network.ApiService { *; }
+-keep class kotlin.coroutines.Continuation
+
+# OkHttp
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keep class okhttp3.** { *; }
+
+# Coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
