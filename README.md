@@ -36,6 +36,8 @@
 - 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、Shadowsocks、SOCKS5
 - 🧭 **智能分流**：国内流量直连，国外流量代理，自动识别主流 CN 应用/CDN
 - ⚡ **自动选择**：一键测速，自动选择最优节点
+- 📦 **分应用代理**：精细控制哪些应用走代理或绕过 VPN
+- 🌐 **绕过局域网**：一键开关，局域网流量直连不受影响
 - 🚩 **智能国旗**：自动识别节点名称中的国旗 Emoji（如 🇫🇮），优雅展示
 - 🔔 **公告系统**：支持远程推送公告通知
 - 📦 **稳健更新**：
@@ -166,21 +168,62 @@ app/src/main/java/xyz/a202132/app/
 │   ├── model/             # 数据模型
 │   │   ├── ApiModels.kt   # API 响应模型
 │   │   ├── Node.kt        # 节点数据模型
-│   │   └── NodeType.kt    # 代理协议类型枚举
+│   │   ├── NodeType.kt    # 代理协议类型枚举
+│   │   └── PerAppProxyMode.kt  # 分应用代理模式枚举
 │   └── repository/        # 数据仓库
+│       └── SettingsRepository.kt  # 设置存储（包含分应用代理、绕过局域网等）
 ├── network/
 │   ├── ApiService.kt      # Retrofit API 接口定义
 │   ├── NetworkClient.kt   # 网络客户端配置
 │   ├── LatencyTester.kt   # 节点延迟测试
 │   └── SubscriptionParser.kt  # 订阅链接解析器
 ├── service/
-│   └── BoxVpnService.kt   # VPN 服务（sing-box 核心）
-├── ui/                    # UI 组件（Compose）
+│   ├── BoxVpnService.kt   # VPN 服务（sing-box 核心）
+│   └── ServiceManager.kt  # VPN 服务管理器
+├── ui/
+│   ├── components/        # 可复用 UI 组件
+│   └── screens/
+│       ├── MainScreen.kt  # 主界面
+│       └── PerAppProxyScreen.kt  # 分应用代理设置界面
 ├── util/
 │   └── SingBoxConfigGenerator.kt  # sing-box 配置生成器
 └── viewmodel/
-    └── MainViewModel.kt   # 主界面 ViewModel
+    ├── MainViewModel.kt   # 主界面 ViewModel
+    └── PerAppProxyViewModel.kt  # 分应用代理 ViewModel
 ```
+
+---
+
+## 高级功能
+
+### 分应用代理
+
+分应用代理允许用户精细控制哪些应用走代理或绕过 VPN。
+
+**功能特点**：
+- 🟢 **代理模式**：只有选中的应用走代理，其他应用直连
+- 🔴 **绕过模式**：选中的应用直连，其他应用走代理
+- 🔍 **搜索过滤**：支持按应用名称或包名搜索
+- 📂 **系统应用筛选**：可选择显示/隐藏系统应用
+
+**设置位置**：侧边栏 → 分应用代理
+
+---
+
+### 绕过局域网
+
+开启后，局域网流量将绕过 VPN 直连，确保内网设备访问正常。
+
+**绕过的 IP 范围**：
+| IP 段 | 说明 |
+|--------|------|
+| `127.0.0.0/8` | 本地回环 (localhost) |
+| `10.0.0.0/8` | A类私有网络 |
+| `172.16.0.0/12` | B类私有网络 |
+| `192.168.0.0/16` | C类私有网络 |
+| `169.254.0.0/16` | 链路本地地址 |
+
+**设置位置**：侧边栏 → 绕过局域网（默认开启）
 
 ---
 

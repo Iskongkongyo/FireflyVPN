@@ -27,6 +27,9 @@ import xyz.a202132.app.ui.theme.*
 @Composable
 fun DrawerContent(
     onCheckUpdate: () -> Unit,
+    onOpenPerAppProxy: () -> Unit,
+    bypassLan: Boolean,
+    onToggleBypassLan: (Boolean) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -55,6 +58,31 @@ fun DrawerContent(
             onClick = {
                 onCheckUpdate()
                 onClose()
+            }
+        )
+        
+        DrawerMenuItem(
+            icon = Icons.Outlined.Apps,
+            title = "分应用代理",
+            subtitle = "选择代理应用",
+            onClick = {
+                onOpenPerAppProxy()
+                onClose()
+            }
+        )
+        
+        DrawerMenuToggle(
+            icon = Icons.Outlined.Router,
+            title = "绕过局域网",
+            subtitle = if (bypassLan) "已开启" else "已关闭",
+            checked = bypassLan,
+            onCheckedChange = { newValue ->
+                onToggleBypassLan(newValue)
+                Toast.makeText(
+                    context,
+                    if (newValue) "已开启绕过局域网" else "已关闭绕过局域网",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
         
@@ -137,6 +165,57 @@ private fun DrawerMenuItem(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DrawerMenuToggle(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        color = androidx.compose.ui.graphics.Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
+            // Switch 移除，点击整行即可切换，更美观
         }
     }
 }

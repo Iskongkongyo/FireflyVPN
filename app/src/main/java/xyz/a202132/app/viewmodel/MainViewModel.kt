@@ -81,6 +81,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ProxyMode.SMART
     )
     
+    val bypassLan = settingsRepository.bypassLan.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        true // 默认开启绕过局域网
+    )
+    
     val isUserAgreementAccepted = settingsRepository.isUserAgreementAccepted.stateIn(
         viewModelScope,
         SharingStarted.Lazily,
@@ -367,6 +373,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
+    /**
+     * 重启 VPN 如果正在运行 (用于应用设置变更)
+     */
+    fun restartVpnIfNeeded() {
+        if (vpnState.value == VpnState.CONNECTED) {
+            currentNode.value?.let { node ->
+                Log.i(tag, "Settings changed, restarting VPN to apply...")
+                ServiceManager.startVpn(getApplication(), node, proxyMode.value)
+            }
+        }
+    }
+    
+    /**
+     * 设置绕过局域网
+     */
+    fun setBypassLan(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setBypassLan(enabled)
+            // 如果 VPN 正在运行，重启以应用新设置
+            restartVpnIfNeeded()
+        }
+    }
+
     /**
      * 检查通知公告
      */

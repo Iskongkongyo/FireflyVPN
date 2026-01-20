@@ -26,9 +26,9 @@ import xyz.a202132.app.viewmodel.MainViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-
     viewModel: MainViewModel = viewModel(),
-    onStartVpn: (action: () -> Unit) -> Unit
+    onStartVpn: (action: () -> Unit) -> Unit,
+    onOpenPerAppProxy: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -55,6 +55,9 @@ fun MainScreen(
     val uploadTotal by viewModel.uploadTotal.collectAsState()
     val downloadTotal by viewModel.downloadTotal.collectAsState()
     
+    // 绕过局域网设置
+    val bypassLan by viewModel.bypassLan.collectAsState()
+    
     // Show error toast
     LaunchedEffect(error) {
         error?.let { errorMessage ->
@@ -72,6 +75,9 @@ fun MainScreen(
             ) {
                 DrawerContent(
                     onCheckUpdate = { viewModel.checkUpdate() },
+                    onOpenPerAppProxy = onOpenPerAppProxy,
+                    bypassLan = bypassLan,
+                    onToggleBypassLan = { viewModel.setBypassLan(it) },
                     onClose = { scope.launch { drawerState.close() } }
                 )
             }

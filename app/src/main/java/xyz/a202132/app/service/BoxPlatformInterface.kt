@@ -15,6 +15,7 @@ import io.nekohasekai.libbox.NetworkInterfaceIterator
 import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.TunOptions
+import kotlinx.coroutines.flow.first
 import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.InterfaceAddress
@@ -170,6 +171,9 @@ class BoxPlatformInterface(
             builder.addRoute("::", 0)
         }
         
+        // 分应用代理
+        applyPerAppProxy(builder)
+        
         // 排除自身应用
         try {
             builder.addDisallowedApplication(service.packageName)
@@ -182,6 +186,60 @@ class BoxPlatformInterface(
         val fd = tunFd?.fd ?: -1
         Log.d(TAG, "TUN interface opened with fd: $fd")
         return fd
+    }
+    
+    /**
+     * 应用分应用代理规则
+     */
+    private fun applyPerAppProxy(builder: android.net.VpnService.Builder) {
+        val settingsRepo = xyz.a202132.app.data.repository.SettingsRepository(service)
+        
+        // 使用 runBlocking 读取设置（在 openTun 调用时需要同步获取）
+        val isPerAppEnabled = kotlinx.coroutines.runBlocking { 
+            settingsRepo.perAppProxyEnabled.first() 
+        }
+        
+        if (!isPerAppEnabled) {
+            Log.d(TAG, "Per-app proxy disabled, all apps will use VPN")
+            return
+        }
+        
+        val mode = kotlinx.coroutines.runBlocking { 
+            settingsRepo.perAppProxyMode.first() 
+        }
+        val selectedPackages = kotlinx.coroutines.runBlocking { 
+            settingsRepo.selectedPackages.first() 
+        }
+        
+        Log.d(TAG, "Per-app proxy enabled, mode: $mode, selected: ${selectedPackages.size} apps")
+        
+        when (mode) {
+            xyz.a202132.app.data.model.PerAppProxyMode.WHITELIST -> {
+                // 代理模式：只允许选中的应用使用 VPN
+                if (selectedPackages.isEmpty()) {
+                    Log.w(TAG, "Whitelist mode but no apps selected - no apps will use VPN")
+                }
+                selectedPackages.forEach { pkg ->
+                    try {
+                        builder.addAllowedApplication(pkg)
+                        Log.d(TAG, "Allowed app: $pkg")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to allow app: $pkg", e)
+                    }
+                }
+            }
+            xyz.a202132.app.data.model.PerAppProxyMode.BLACKLIST -> {
+                // 绕过模式：排除选中的应用
+                selectedPackages.forEach { pkg ->
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                        Log.d(TAG, "Disallowed app: $pkg")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to disallow app: $pkg", e)
+                    }
+                }
+            }
+        }
     }
     
     override fun useProcFS(): Boolean {

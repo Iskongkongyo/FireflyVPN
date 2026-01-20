@@ -139,10 +139,18 @@ class BoxVpnService : VpnService() {
                     selectedNodeId = allNodes.find { it.rawLink == rawLink }?.id
                 }
                 
-                Log.d(TAG, "Generating config with ${allNodes.size} nodes, selected: $selectedNodeId")
+                // 读取绕过局域网设置
+                val settingsRepo = xyz.a202132.app.data.repository.SettingsRepository(application)
+                val bypassLan = try {
+                    settingsRepo.bypassLan.first()
+                } catch (e: Exception) {
+                    true // 默认开启
+                }
+                
+                Log.d(TAG, "Generating config with ${allNodes.size} nodes, selected: $selectedNodeId, bypassLan: $bypassLan")
 
                 // 3. 生成sing-box配置
-                val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode)
+                val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan)
                 val configFile = saveConfigToFile(config)
                 
                 // 初始化 libbox

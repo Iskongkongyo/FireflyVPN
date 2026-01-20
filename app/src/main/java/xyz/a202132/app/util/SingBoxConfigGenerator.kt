@@ -21,8 +21,9 @@ class SingBoxConfigGenerator {
      * 生成完整的sing-box配置
      * @param nodes 所有可用节点列表
      * @param selectedNodeId 当前选择的节点ID（如果为null则默认选择auto）
+     * @param bypassLan 是否绕过局域网
      */
-    fun generateConfig(nodes: List<Node>, selectedNodeId: String?, proxyMode: ProxyMode): String {
+    fun generateConfig(nodes: List<Node>, selectedNodeId: String?, proxyMode: ProxyMode, bypassLan: Boolean = true): String {
         // 如果没有节点，生成一个空配置防止崩溃
         if (nodes.isEmpty()) {
             return generateEmptyConfig()
@@ -41,7 +42,7 @@ class SingBoxConfigGenerator {
             add("dns", createDnsConfig(proxyMode, nodeDomains))
             add("inbounds", createInbounds())
             add("outbounds", createOutbounds(nodes, selectedNodeId))
-            add("route", createRoute(proxyMode, nodeDomains, nodeIPs))
+            add("route", createRoute(proxyMode, nodeDomains, nodeIPs, bypassLan))
             add("experimental", createExperimental())
         }
         return gson.toJson(config)
@@ -467,7 +468,7 @@ class SingBoxConfigGenerator {
         }
     }
     
-    private fun createRoute(proxyMode: ProxyMode, nodeDomains: List<String>, nodeIPs: List<String>): JsonObject {
+    private fun createRoute(proxyMode: ProxyMode, nodeDomains: List<String>, nodeIPs: List<String>, bypassLan: Boolean = true): JsonObject {
         val rules = JsonArray()
         
         // 1. Hijack DNS Traffic
@@ -476,11 +477,13 @@ class SingBoxConfigGenerator {
             addProperty("outbound", "dns-out")
         })
         
-        // 2. Loopback/Private IPs -> Direct
-        rules.add(JsonObject().apply {
-            addProperty("ip_is_private", true)
-            addProperty("outbound", "direct")
-        })
+        // 2. Loopback/Private IPs -> Direct (仅当 bypassLan 开启时)
+        if (bypassLan) {
+            rules.add(JsonObject().apply {
+                addProperty("ip_is_private", true)
+                addProperty("outbound", "direct")
+            })
+        }
 
         // 3. Proxy Server Domains -> Direct (Avoid Loop)
         if (nodeDomains.isNotEmpty()) {
