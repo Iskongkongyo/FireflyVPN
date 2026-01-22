@@ -87,6 +87,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         true // 默认开启绕过局域网
     )
     
+    val ipv6RoutingMode = settingsRepository.ipv6RoutingMode.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        IPv6RoutingMode.DISABLED
+    )
+    
     val isUserAgreementAccepted = settingsRepository.isUserAgreementAccepted.stateIn(
         viewModelScope,
         SharingStarted.Lazily,
@@ -391,6 +397,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setBypassLan(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setBypassLan(enabled)
+            // 如果 VPN 正在运行，重启以应用新设置
+            restartVpnIfNeeded()
+        }
+    }
+    
+    /**
+     * 设置 IPv6 路由模式
+     */
+    fun setIPv6RoutingMode(mode: IPv6RoutingMode) {
+        viewModelScope.launch {
+            settingsRepository.setIPv6RoutingMode(mode)
             // 如果 VPN 正在运行，重启以应用新设置
             restartVpnIfNeeded()
         }

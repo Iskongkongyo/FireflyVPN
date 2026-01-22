@@ -7,6 +7,7 @@ import com.google.gson.JsonObject
 import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.NodeType
 import xyz.a202132.app.data.model.ProxyMode
+import xyz.a202132.app.data.model.IPv6RoutingMode
 import android.net.Uri
 import android.util.Base64
 
@@ -22,8 +23,9 @@ class SingBoxConfigGenerator {
      * @param nodes 所有可用节点列表
      * @param selectedNodeId 当前选择的节点ID（如果为null则默认选择auto）
      * @param bypassLan 是否绕过局域网
+     * @param ipv6Mode IPv6 路由模式
      */
-    fun generateConfig(nodes: List<Node>, selectedNodeId: String?, proxyMode: ProxyMode, bypassLan: Boolean = true): String {
+    fun generateConfig(nodes: List<Node>, selectedNodeId: String?, proxyMode: ProxyMode, bypassLan: Boolean = true, ipv6Mode: IPv6RoutingMode = IPv6RoutingMode.DISABLED): String {
         // 如果没有节点，生成一个空配置防止崩溃
         if (nodes.isEmpty()) {
             return generateEmptyConfig()
@@ -34,13 +36,14 @@ class SingBoxConfigGenerator {
             // Extract unique domains and IPs
             val uniqueServers = nodes.map { it.server }.distinct()
             val ipRegex = Regex("^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
+            val ipv6Regex = Regex("([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}") // Simple regex for IPv6 detection
             
-            val nodeIPs = uniqueServers.filter { it.matches(ipRegex) }
-            val nodeDomains = uniqueServers.filter { !it.matches(ipRegex) }
+            val nodeIPs = uniqueServers.filter { it.matches(ipRegex) || it.contains(":") } // Treat anything with : as potential IPv6
+            val nodeDomains = uniqueServers.filter { !it.matches(ipRegex) && !it.contains(":") }
                 
             add("log", createLogConfig())
-            add("dns", createDnsConfig(proxyMode, nodeDomains))
-            add("inbounds", createInbounds())
+            add("dns", createDnsConfig(proxyMode, nodeDomains, ipv6Mode))
+            add("inbounds", createInbounds(ipv6Mode))
             add("outbounds", createOutbounds(nodes, selectedNodeId))
             add("route", createRoute(proxyMode, nodeDomains, nodeIPs, bypassLan))
             add("experimental", createExperimental())
@@ -51,7 +54,7 @@ class SingBoxConfigGenerator {
     private fun generateEmptyConfig(): String {
         val config = JsonObject().apply {
             add("log", createLogConfig())
-            add("inbounds", createInbounds())
+            add("inbounds", createInbounds(IPv6RoutingMode.DISABLED))
             add("outbounds", JsonArray().apply {
                 add(JsonObject().apply {
                     addProperty("type", "direct")
@@ -97,7 +100,7 @@ class SingBoxConfigGenerator {
         }
     }
     
-    private fun createDnsConfig(proxyMode: ProxyMode, nodeDomains: List<String>): JsonObject {
+    private fun createDnsConfig(proxyMode: ProxyMode, nodeDomains: List<String>, ipv6Mode: IPv6RoutingMode): JsonObject {
         val servers = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("tag", "google")
@@ -166,24 +169,55 @@ class SingBoxConfigGenerator {
             addProperty("server", "google")
         })
         
+        // DNS strategy based on IPv6 mode
+        val dnsStrategy = when (ipv6Mode) {
+            IPv6RoutingMode.ONLY -> "ipv6_only"
+            IPv6RoutingMode.PREFER -> "prefer_ipv6"
+            // ENABLED 模式下，如果想要测试 IPv6，最好也稍微倾向 IPv6，或者使用 prefer_ipv4 (默认)
+            // 但用户反馈 ipcheck 不显示 ipv6，说明默认 prefer_ipv4 导致双栈站点走 IPv4。
+            // 为了更好的体验，ENABLED 可以保持 prefer_ipv4 保证速度，PREFER 用 prefer_ipv6
+            else -> "prefer_ipv4"
+        }
+        
         return JsonObject().apply {
             add("servers", servers)
             add("rules", rules)
-            addProperty("strategy", "prefer_ipv4")
+            addProperty("strategy", dnsStrategy)
         }
     }
     
-    private fun createInbounds(): JsonArray {
+    private fun createInbounds(ipv6Mode: IPv6RoutingMode): JsonArray {
         return JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("type", "tun")
                 addProperty("tag", "tun-in")
                 addProperty("interface_name", "tun0")
+                // IPv4 地址 (总是添加，否则 DNS 劫持会报错 "need one more IPv4 address")
                 addProperty("inet4_address", "172.19.0.1/30")
+                
+                // IPv6 地址 (启用/优先/仅模式下添加)
+                if (ipv6Mode != IPv6RoutingMode.DISABLED) {
+                    // 使用 GUA 地址而非 ULA，防止 Android 认为无 IPv6 互联网连接
+                    // 必须使用 /126 或更小掩码，因为 system stack 需要至少一个额外的 IPv6 地址用于网关/路由
+                    addProperty("inet6_address", "2001:db8::1/126")
+                }
                 addProperty("mtu", 9000)
                 addProperty("auto_route", true)
                 addProperty("strict_route", true)
-                addProperty("stack", "system")
+                
+                // 显式配置路由地址 (sing-box 1.12.x 使用 route_address)
+                add("route_address", JsonArray().apply {
+                    // IPv4 全局路由 (仅IPv6模式下不添加)
+                    if (ipv6Mode != IPv6RoutingMode.ONLY) {
+                        add("0.0.0.0/0")
+                    }
+                    // IPv6 全局路由 (启用/优先/仅模式下添加)
+                    if (ipv6Mode != IPv6RoutingMode.DISABLED) {
+                        add("::/0")
+                    }
+                })
+                
+                addProperty("stack", "gvisor")
                 addProperty("sniff", true)
                 addProperty("sniff_override_destination", true)
             })
@@ -537,9 +571,12 @@ class SingBoxConfigGenerator {
             // 5. Private IPs & CN IPs -> Direct
             rules.add(JsonObject().apply {
                 add("ip_cidr", JsonArray().apply {
-                    // Private
+                    // Private IPv4
                     add("10.0.0.0/8"); add("172.16.0.0/12"); add("192.168.0.0/16")
                     add("127.0.0.0/8")
+                    // Private IPv6
+                    add("fc00::/7"); add("fe80::/10")
+                    
                     // CN DNS
                     add("223.5.5.5/32"); add("223.6.6.6/32")
                     add("119.29.29.29/32"); add("114.114.114.114/32")
@@ -553,7 +590,15 @@ class SingBoxConfigGenerator {
         if (nodeIPs.isNotEmpty()) {
             rules.add(JsonObject().apply {
                 add("ip_cidr", JsonArray().apply {
-                    nodeIPs.forEach { add("$it/32") }
+                    nodeIPs.forEach { 
+                        if (it.contains(":")) {
+                            // 移除可能存在的方括号 (sing-box ip_cidr 不支持方括号)
+                            val cleanIp = it.replace("[", "").replace("]", "")
+                            add("$cleanIp/128") // IPv6
+                        } else {
+                            add("$it/32") // IPv4
+                        }
+                    }
                 })
                 addProperty("outbound", "direct")
             })

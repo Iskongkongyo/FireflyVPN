@@ -147,10 +147,17 @@ class BoxVpnService : VpnService() {
                     true // 默认开启
                 }
                 
-                Log.d(TAG, "Generating config with ${allNodes.size} nodes, selected: $selectedNodeId, bypassLan: $bypassLan")
+                // 读取 IPv6 路由模式
+                val ipv6Mode = try {
+                    settingsRepo.ipv6RoutingMode.first()
+                } catch (e: Exception) {
+                    xyz.a202132.app.data.model.IPv6RoutingMode.DISABLED // 默认禁用
+                }
+                
+                Log.d(TAG, "Generating config with ${allNodes.size} nodes, selected: $selectedNodeId, bypassLan: $bypassLan, ipv6Mode: $ipv6Mode")
 
                 // 3. 生成sing-box配置
-                val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan)
+                val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan, ipv6Mode)
                 val configFile = saveConfigToFile(config)
                 
                 // 初始化 libbox

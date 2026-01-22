@@ -58,6 +58,9 @@ fun MainScreen(
     // 绕过局域网设置
     val bypassLan by viewModel.bypassLan.collectAsState()
     
+    // IPv6 路由设置
+    val ipv6RoutingMode by viewModel.ipv6RoutingMode.collectAsState()
+    
     // Show error toast
     LaunchedEffect(error) {
         error?.let { errorMessage ->
@@ -78,6 +81,8 @@ fun MainScreen(
                     onOpenPerAppProxy = onOpenPerAppProxy,
                     bypassLan = bypassLan,
                     onToggleBypassLan = { viewModel.setBypassLan(it) },
+                    ipv6RoutingMode = ipv6RoutingMode,
+                    onIPv6RoutingModeChange = { viewModel.setIPv6RoutingMode(it) },
                     onClose = { scope.launch { drawerState.close() } }
                 )
             }

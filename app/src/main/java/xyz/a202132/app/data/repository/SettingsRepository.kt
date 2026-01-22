@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.data.model.PerAppProxyMode
+import xyz.a202132.app.data.model.IPv6RoutingMode
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
@@ -27,6 +28,9 @@ class SettingsRepository(private val context: Context) {
         
         // 绕过局域网设置
         private val BYPASS_LAN = booleanPreferencesKey("bypass_lan")
+        
+        // IPv6 路由设置
+        private val IPV6_ROUTING_MODE = stringPreferencesKey("ipv6_routing_mode")
     }
     
     val selectedNodeId: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -135,6 +139,22 @@ class SettingsRepository(private val context: Context) {
     suspend fun setBypassLan(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[BYPASS_LAN] = enabled
+        }
+    }
+    
+    // IPv6 路由模式
+    val ipv6RoutingMode: Flow<IPv6RoutingMode> = context.dataStore.data.map { preferences ->
+        val mode = preferences[IPV6_ROUTING_MODE] ?: IPv6RoutingMode.DISABLED.name
+        try {
+            IPv6RoutingMode.valueOf(mode)
+        } catch (e: Exception) {
+            IPv6RoutingMode.DISABLED
+        }
+    }
+    
+    suspend fun setIPv6RoutingMode(mode: IPv6RoutingMode) {
+        context.dataStore.edit { preferences ->
+            preferences[IPV6_ROUTING_MODE] = mode.name
         }
     }
 }
