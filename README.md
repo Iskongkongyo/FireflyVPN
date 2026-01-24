@@ -300,7 +300,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
 |------|------|------|
 | `version` | String | 版本号（显示用） |
 | `versionCode` | Int | 版本代码（用于比较） |
-| is_force | Int | 是否强制更新（1为强制更新） |
+| `is_force` | Int | 是否强制更新（1为强制更新） |
 | `downloadUrl` | String | APK 下载地址 |
 | `changelog` | String | 更新日志 |
 
@@ -330,7 +330,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
 | `hasNotice` | Boolean | 是否有公告 |
 | `title` | String | 公告标题 |
 | `content` | String | 公告内容 |
-| showOnce | Boolean | 公告只显示一次还是打开APP就显示 |
+| `showOnce` | Boolean | 公告只显示一次还是打开APP就显示 |
 | `noticeId` | String | 公告唯一ID（用于去重） |
 
 **配置位置**: `AppConfig.kt` → `NOTICE_URL`
