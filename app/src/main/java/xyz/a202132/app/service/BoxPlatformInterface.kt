@@ -38,37 +38,40 @@ class BoxPlatformInterface(
     private var defaultNetwork: Network? = null
     private var interfaceUpdateListener: InterfaceUpdateListener? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNotifiedNetworkId: Long = -1
     
     private val connectivityManager by lazy {
         service.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
+    
+    private val availableNetworks = java.util.concurrent.ConcurrentHashMap<Network, NetworkCapabilities>()
     
     /**
      * 启动网络监控 - 必须在 Libbox.newService 之前调用
      */
     fun startNetworkMonitor() {
         Log.d(TAG, "Starting network monitor")
-        defaultNetwork = connectivityManager.activeNetwork
         
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available: $network")
-                defaultNetwork = network
-                notifyInterfaceUpdate(network)
+                // 获取 capabilities，如果获取不到则忽略
+                val caps = connectivityManager.getNetworkCapabilities(network) ?: return
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return
+                
+                availableNetworks[network] = caps
+                evaluateBestNetwork()
             }
             
             override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost: $network")
-                if (defaultNetwork == network) {
-                    defaultNetwork = null
-                    interfaceUpdateListener?.updateDefaultInterface("", -1, false, false)
-                }
+                availableNetworks.remove(network)
+                evaluateBestNetwork()
             }
             
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                if (defaultNetwork == network) {
-                    notifyInterfaceUpdate(network)
-                }
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return
+                
+                availableNetworks[network] = capabilities
+                evaluateBestNetwork()
             }
         }
         
@@ -76,17 +79,48 @@ class BoxPlatformInterface(
         
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
         
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                connectivityManager.registerDefaultNetworkCallback(callback)
-            } else {
-                connectivityManager.requestNetwork(request, callback)
-            }
+            connectivityManager.registerNetworkCallback(request, callback)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback", e)
+        }
+    }
+    
+    private fun evaluateBestNetwork() {
+        var bestNetwork: Network? = null
+        var bestCaps: NetworkCapabilities? = null
+        var bestScore = -1
+        
+        // 优先级: Ethernet (3) > WiFi (2) > Cellular (1)
+        for ((network, caps) in availableNetworks) {
+            val score = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 3
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 2
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 1
+                else -> 0
+            }
+            
+            if (score > bestScore) {
+                bestScore = score
+                bestNetwork = network
+                bestCaps = caps
+            }
+        }
+        
+        // 如果最佳网络发生变化
+        if (bestNetwork != defaultNetwork) {
+            Log.d(TAG, "Network switched to: $bestNetwork (Score: $bestScore)")
+            defaultNetwork = bestNetwork
+            
+            updateUnderlyingNetwork(bestNetwork)
+            notifyInterfaceUpdate(bestNetwork)
+            
+            if (bestNetwork != null && bestCaps != null) {
+                checkAndNotifyCellularNetwork(bestNetwork, bestCaps)
+            }
         }
     }
     
@@ -112,6 +146,52 @@ class BoxPlatformInterface(
             }
         } else {
             listener.updateDefaultInterface("", -1, false, false)
+        }
+    }
+    
+    /**
+     * 更新 VPN 底层网络
+     * 当网络切换（WiFi <-> 蜂窝网络）时调用，确保 VPN 流量走新的物理网络
+     */
+    private fun updateUnderlyingNetwork(network: Network?) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                val networks = if (network != null) arrayOf(network) else null
+                service.setUnderlyingNetworks(networks)
+                Log.d(TAG, "Updated underlying network: ${network ?: "null"}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update underlying network", e)
+        }
+    }
+    
+    /**
+     * 检测是否为蜂窝网络并通知用户
+     */
+    private fun checkAndNotifyCellularNetwork(network: Network, capabilities: NetworkCapabilities) {
+        try {
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                // 防止重复提醒同一网络
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    if (network.networkHandle == lastNotifiedNetworkId) {
+                        return
+                    }
+                }
+                
+                Log.d(TAG, "Switched to cellular network, notifying user")
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    lastNotifiedNetworkId = network.networkHandle
+                }
+                
+                ServiceManager.notifyCellularNetwork()
+            } else {
+                // 如果切换到了非蜂窝网络，重置提醒 ID
+                // 这样下次切换回蜂窝网络时可以再次提醒
+                lastNotifiedNetworkId = -1
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to check network type", e)
         }
     }
     

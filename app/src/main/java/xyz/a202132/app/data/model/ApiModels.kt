@@ -33,7 +33,10 @@ data class NoticeInfo(
     val content: String = "",
     
     @SerializedName("noticeId")
-    val noticeId: String = ""
+    val noticeId: String = "",
+    
+    @SerializedName("showOnce")
+    val showOnce: Boolean = true
 )
 
 /**

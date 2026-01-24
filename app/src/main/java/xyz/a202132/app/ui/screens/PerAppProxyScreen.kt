@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -88,9 +90,9 @@ fun PerAppProxyScreen(
                     }
                 },
                 actions = {
-                    // 全选按钮
-                    IconButton(onClick = { viewModel.selectAll() }) {
-                        Icon(Icons.Outlined.SelectAll, contentDescription = "全选")
+                    // 反选按钮
+                    IconButton(onClick = { viewModel.invertSelection() }) {
+                        Icon(Icons.Filled.SwapVert, contentDescription = "反选")
                     }
                     // 取消全选按钮
                     IconButton(onClick = { viewModel.deselectAll() }) {
@@ -286,6 +288,16 @@ fun PerAppProxyScreen(
                 )
             )
             
+            // 滚动状态
+            val listState = rememberLazyListState()
+            
+            // 监听滚动到顶部事件
+            LaunchedEffect(Unit) {
+                viewModel.scrollToTopEvent.collect {
+                    listState.animateScrollToItem(0)
+                }
+            }
+            
             // 应用列表
             if (isLoading) {
                 Box(
@@ -301,6 +313,7 @@ fun PerAppProxyScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
+                    state = listState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {

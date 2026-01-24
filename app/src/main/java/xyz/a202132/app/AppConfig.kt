@@ -5,9 +5,9 @@ package xyz.a202132.app
  */
 object AppConfig {
     // API URLs
-    const val SUBSCRIPTION_URL = "https://your-server.com/api/nodes"
-    const val UPDATE_URL = "https://your-server.com/api/update"
-    const val NOTICE_URL = "https://your-server.com/api/notice"
+    const val SUBSCRIPTION_URL = "https://your-server.com/api//nodes"
+    const val UPDATE_URL = "https://your-server.com/api//update"
+    const val NOTICE_URL = "https://your-server.com/api//notice"
     const val WEBSITE_URL = "https://your-website.com"
     
     // Contact

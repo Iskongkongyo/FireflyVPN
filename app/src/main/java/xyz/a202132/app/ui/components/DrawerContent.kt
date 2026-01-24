@@ -68,17 +68,7 @@ fun DrawerContent(
                 onClose()
             }
         )
-        
-        DrawerMenuItem(
-            icon = Icons.Outlined.Apps,
-            title = "分应用代理",
-            subtitle = "选择代理应用",
-            onClick = {
-                onOpenPerAppProxy()
-                onClose()
-            }
-        )
-        
+
         // IPv6 路由菜单项
         DrawerMenuItem(
             icon = Icons.Outlined.SettingsEthernet,
@@ -90,6 +80,16 @@ fun DrawerContent(
                 IPv6RoutingMode.ONLY -> "仅"
             },
             onClick = { showIPv6Dialog = true }
+        )
+        
+        DrawerMenuItem(
+            icon = Icons.Outlined.Apps,
+            title = "分应用代理",
+            subtitle = "选择代理应用",
+            onClick = {
+                onOpenPerAppProxy()
+                onClose()
+            }
         )
         
         DrawerMenuToggle(

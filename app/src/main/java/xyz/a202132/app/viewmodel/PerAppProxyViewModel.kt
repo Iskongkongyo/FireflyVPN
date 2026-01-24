@@ -52,7 +52,7 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
     
     val mode: StateFlow<PerAppProxyMode> = settingsRepository.perAppProxyMode
-        .stateIn(viewModelScope, SharingStarted.Lazily, PerAppProxyMode.BLACKLIST)
+        .stateIn(viewModelScope, SharingStarted.Lazily, PerAppProxyMode.WHITELIST)
     
     val selectedPackages: StateFlow<Set<String>> = settingsRepository.selectedPackages
         .stateIn(viewModelScope, SharingStarted.Lazily, emptySet())
@@ -65,9 +65,8 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
     val filteredApps: StateFlow<List<AppInfo>> = combine(
         _allApps,
         searchQuery,
-        showSystemApps,
-        selectedPackages
-    ) { apps, query, showSystem, selected ->
+        showSystemApps
+    ) { apps, query, showSystem ->
         apps.filter { app ->
             // 过滤系统应用
             val passSystemFilter = showSystem || !app.isSystemApp
@@ -81,11 +80,7 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
             }
             
             passSystemFilter && passSearchFilter
-        }.sortedWith(
-            // 已选中的排在前面，然后按应用名排序
-            compareByDescending<AppInfo> { it.packageName in selected }
-                .thenBy { it.appName }
-        )
+        }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     
     // 已选中应用数量
@@ -96,6 +91,10 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
     // 权限状态 (针对部分定制 ROM 需要手动授权 "获取应用列表")
     private val _isPermissionDenied = MutableStateFlow(false)
     val isPermissionDenied: StateFlow<Boolean> = _isPermissionDenied.asStateFlow()
+    
+    // Scroll to Top Event Channel
+    private val _scrollToTopEvent = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.BUFFERED)
+    val scrollToTopEvent = _scrollToTopEvent.receiveAsFlow()
     
     init {
         refreshApps()
@@ -113,7 +112,10 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
                     val installedPackages = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
                     val selfPackage = getApplication<Application>().packageName
                     
-                    installedPackages
+                    // 获取当前选中的应用，用于初始排序
+                    val currentSelected = settingsRepository.selectedPackages.first()
+                    
+                    val parsedApps = installedPackages
                         .filter { it.packageName != selfPackage } // 排除自身
                         .map { appInfo ->
                             val appName = try {
@@ -139,7 +141,9 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
                                 isSystemApp = isSystemApp
                             )
                         }
-                        .sortedBy { it.appName }
+                    
+                    // Initial Sort
+                    sortApps(parsedApps, currentSelected)
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to load installed apps", e)
                     emptyList()
@@ -149,14 +153,25 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
             _allApps.value = apps
             _isLoading.value = false
             
-            // 启发式判断：如果获取到的应用很少（例如小于5个），且系统没有抛出异常，
-            // 很有可能是定制系统（如 MIUI/HyperOS, ColorOS）拦截了读取应用列表权限。
             _isPermissionDenied.value = apps.size < 5
             
             val userApps = apps.count { !it.isSystemApp }
             val systemApps = apps.count { it.isSystemApp }
             Log.d(TAG, "Loaded ${apps.size} apps total ($userApps user apps, $systemApps system apps)")
+            
+            // 刷新列表后自动滚动到顶部，确保用户看到排序后的首项
+            _scrollToTopEvent.send(Unit)
         }
+    }
+    
+    /**
+     * 内部排序逻辑
+     */
+    private fun sortApps(apps: List<AppInfo>, selected: Set<String>): List<AppInfo> {
+        return apps.sortedWith(
+            compareByDescending<AppInfo> { it.packageName in selected }
+                .thenBy { it.appName }
+        )
     }
     
     /**
@@ -196,17 +211,34 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
     }
     
     /**
-     * 全选当前过滤列表中的应用
+     * 反选当前过滤列表中的应用
+     * 并将所有选中应用移动到顶部 & 滚动到顶部
      */
-    fun selectAll() {
+    fun invertSelection() {
         viewModelScope.launch {
             val current = selectedPackages.value.toMutableSet()
             val filtered = filteredApps.value
+            
+            // 计算新的选中状态
             filtered.forEach { app ->
-                current.add(app.packageName)
+                if (app.packageName in current) {
+                    current.remove(app.packageName)
+                } else {
+                    current.add(app.packageName)
+                }
             }
+            
+            // 更新存储
             settingsRepository.setSelectedPackages(current)
             _hasChanges.value = true
+            
+            // 重新排序 _allApps 并更新
+            // 注意：这里我们得重新排序所有应用，不仅仅是过滤后的
+            val sortedApps = sortApps(_allApps.value, current)
+            _allApps.value = sortedApps
+            
+            // 触发滚动到顶部
+            _scrollToTopEvent.send(Unit)
         }
     }
     

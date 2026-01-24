@@ -42,6 +42,10 @@ object ServiceManager {
     private val _isServiceRunning = MutableStateFlow(false)
     val isServiceRunning: StateFlow<Boolean> = _isServiceRunning.asStateFlow()
     
+    // 移动网络提醒
+    private val _cellularWarning = MutableStateFlow<String?>(null)
+    val cellularWarning: StateFlow<String?> = _cellularWarning.asStateFlow()
+    
     const val VPN_PERMISSION_REQUEST_CODE = 1001
     
     /**
@@ -129,6 +133,22 @@ object ServiceManager {
      */
     fun clearError() {
         _errorMessage.value = null
+    }
+    
+    /**
+     * 通知切换到移动网络（由 BoxPlatformInterface 调用）
+     */
+    fun notifyCellularNetwork() {
+        if (_isServiceRunning.value || _vpnState.value == VpnState.CONNECTING) {
+            _cellularWarning.value = "使用移动网络中，请注意流量消耗"
+        }
+    }
+    
+    /**
+     * 清除移动网络提醒
+     */
+    fun clearCellularWarning() {
+        _cellularWarning.value = null
     }
     
     /**

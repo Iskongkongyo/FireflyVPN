@@ -420,21 +420,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val noticeInfo = NetworkClient.apiService.getNoticeInfo(AppConfig.NOTICE_URL)
             if (noticeInfo.hasNotice) {
-                // 检查是否已显示过
-                val lastNoticeId = settingsRepository.lastNoticeId.first()
-                if (lastNoticeId != noticeInfo.noticeId) {
+                // 如果 showOnce 为 true，检查是否已显示过
+                // 如果 showOnce 为 false，则每次都显示
+                if (!noticeInfo.showOnce) {
                     _notice.value = noticeInfo
+                    // 更新最后显示的 ID，以便后续如果服务器端改为 true，也能正确判断
                     settingsRepository.setLastNoticeId(noticeInfo.noticeId)
+                } else {
+                    val lastNoticeId = settingsRepository.lastNoticeId.first()
+                    if (lastNoticeId != noticeInfo.noticeId) {
+                        _notice.value = noticeInfo
+                        settingsRepository.setLastNoticeId(noticeInfo.noticeId)
+                    }
                 }
             }
         } catch (e: Exception) {
             Log.e(tag, "Failed to check notice", e)
         }
     }
-    
-    /**
-     * 检查更新
-     */
+
     /**
      * 检查更新
      * @param isAuto 是否为自动检查 (不显示"已是最新"提示)

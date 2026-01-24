@@ -69,6 +69,15 @@ fun MainScreen(
         }
     }
     
+    // 移动网络提醒
+    val cellularWarning by xyz.a202132.app.service.ServiceManager.cellularWarning.collectAsState()
+    LaunchedEffect(cellularWarning) {
+        cellularWarning?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            xyz.a202132.app.service.ServiceManager.clearCellularWarning()
+        }
+    }
+    
     // Drawer
     ModalNavigationDrawer(
         drawerState = drawerState,

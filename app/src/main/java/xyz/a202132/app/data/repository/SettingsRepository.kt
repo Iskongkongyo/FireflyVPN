@@ -59,13 +59,12 @@ class SettingsRepository(private val context: Context) {
         preferences[PER_APP_PROXY_ENABLED] ?: false
     }
     
-    // 分应用代理 - 模式 (代理模式/绕过模式)
     val perAppProxyMode: Flow<PerAppProxyMode> = context.dataStore.data.map { preferences ->
-        val mode = preferences[PER_APP_PROXY_MODE] ?: PerAppProxyMode.BLACKLIST.name
+        val mode = preferences[PER_APP_PROXY_MODE] ?: PerAppProxyMode.WHITELIST.name
         try {
             PerAppProxyMode.valueOf(mode)
         } catch (e: Exception) {
-            PerAppProxyMode.BLACKLIST
+            PerAppProxyMode.WHITELIST
         }
     }
     
