@@ -319,6 +319,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
     "hasNotice": true,
     "title": "系统公告",
     "content": "服务器将于今晚 22:00 进行维护，届时可能无法连接。",
+    "showOnce":true,
     "noticeId": "notice_20240117"
 }
 ```
@@ -329,6 +330,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
 | `hasNotice` | Boolean | 是否有公告 |
 | `title` | String | 公告标题 |
 | `content` | String | 公告内容 |
+| showOnce | Boolean | 公告只显示一次还是打开APP就显示 |
 | `noticeId` | String | 公告唯一ID（用于去重） |
 
 **配置位置**: `AppConfig.kt` → `NOTICE_URL`
