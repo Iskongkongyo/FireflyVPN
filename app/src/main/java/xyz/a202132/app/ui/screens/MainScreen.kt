@@ -44,6 +44,7 @@ fun MainScreen(
     val isTesting by viewModel.isTesting.collectAsState()
     val showNodeList by viewModel.showNodeList.collectAsState()
     val notice by viewModel.notice.collectAsState()
+    val noticeConfig by viewModel.noticeConfig.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
     val error by viewModel.error.collectAsState()
     val isAutoSelecting by viewModel.isAutoSelecting.collectAsState()
@@ -60,6 +61,10 @@ fun MainScreen(
     
     // IPv6 路由设置
     val ipv6RoutingMode by viewModel.ipv6RoutingMode.collectAsState()
+    
+    // 备用节点设置
+    val backupNodeEnabled by viewModel.backupNodeEnabled.collectAsState()
+    // val showBackupFailedDialog by viewModel.showBackupFailedDialog.collectAsState() // Removed
     
     // Show error toast
     LaunchedEffect(error) {
@@ -92,6 +97,9 @@ fun MainScreen(
                     onToggleBypassLan = { viewModel.setBypassLan(it) },
                     ipv6RoutingMode = ipv6RoutingMode,
                     onIPv6RoutingModeChange = { viewModel.setIPv6RoutingMode(it) },
+                    notice = noticeConfig, // Use noticeConfig for Drawer (Backup Node visibility)
+                    backupNodeEnabled = backupNodeEnabled,
+                    onToggleBackupNode = { viewModel.setBackupNodeEnabled(it) },
                     onClose = { scope.launch { drawerState.close() } }
                 )
             }
@@ -250,6 +258,8 @@ fun MainScreen(
             onDismiss = { viewModel.dismissNotice() }
         )
     }
+    
+    // 备用节点请求失败弹窗 (已移除，改为 Toast)
     
     // 更新弹窗
     if (updateInfo != null) {

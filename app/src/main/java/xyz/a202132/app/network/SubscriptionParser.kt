@@ -22,9 +22,9 @@ class SubscriptionParser {
     /**
      * 从订阅URL获取并解析节点列表
      */
-    suspend fun fetchAndParse(): Result<List<Node>> {
+    suspend fun fetchAndParse(url: String = AppConfig.SUBSCRIPTION_URL): Result<List<Node>> {
         return try {
-            val response = NetworkClient.apiService.getSubscription(AppConfig.SUBSCRIPTION_URL)
+            val response = NetworkClient.apiService.getSubscription(url)
             val nodes = parseSubscription(response)
             Result.success(nodes)
         } catch (e: Exception) {

@@ -39,6 +39,7 @@
 - 📦 **分应用代理**：精细控制哪些应用走代理或绕过 VPN
 - 🌐 **绕过局域网**：一键开关，局域网流量直连不受影响
 - 🌍 **IPv6 路由**：支持 IPv6 网络访问，可选禁用/启用/优先/仅 IPv6 模式
+- 🔄 **备用节点**：支持配置备用订阅源，主节点不可用时可快速切换
 - 🚩 **智能国旗**：自动识别节点名称中的国旗 Emoji（如 🇫🇮），优雅展示
 - 🔔 **公告系统**：支持远程推送公告通知
 - 📦 **稳健更新**：
@@ -251,6 +252,31 @@ IPv6 路由功能允许用户控制 VPN 对 IPv6 网络的处理方式。
 
 ---
 
+### 备用节点
+
+备用节点功能允许运营者配置备用订阅源，当主订阅不可用或被封锁时，用户可以快速切换到备用源获取节点。
+
+**功能特点**：
+- 🔄 **一键切换**：侧边栏开关，快速切换主/备用订阅源
+- 🛡️ **自动回退**：备用源请求失败时，自动关闭备用模式并恢复默认订阅
+- 💾 **本地缓存**：备用节点 URL 会缓存到本地，确保下次启动时可用
+- 🔔 **状态提示**：切换时自动断开现有连接，并 Toast 提示当前状态
+
+**回退机制**：
+
+以下情况会自动触发回退（关闭备用节点 → 清除缓存 → 恢复默认）：
+- 备用订阅 URL 返回空响应或 HTTP 错误
+- 备用订阅 URL 格式无效（非 http/https 开头）
+- 公告配置中无 `backupNodes` 对象或无 `url` 属性
+
+> ⚠️ **注意**：切换备用节点开关时，如果 VPN 正在运行，会自动断开连接并清除当前选中的节点。
+
+**设置位置**：侧边栏 → 备用节点（仅在公告配置中包含有效 `backupNodes.url` 时显示）
+
+**服务端配置**：参见下方 [公告通知接口](#3-公告通知接口) 中的 `backupNodes` 字段。
+
+---
+
 ## API 接口
 
 ### 1. 节点订阅接口
@@ -300,7 +326,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
 |------|------|------|
 | `version` | String | 版本号（显示用） |
 | `versionCode` | Int | 版本代码（用于比较） |
-| `is_force` | Int | 是否强制更新（1为强制更新） |
+| is_force | Int | 是否强制更新（1为强制更新） |
 | `downloadUrl` | String | APK 下载地址 |
 | `changelog` | String | 更新日志 |
 
@@ -319,19 +345,31 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
     "hasNotice": true,
     "title": "系统公告",
     "content": "服务器将于今晚 22:00 进行维护，届时可能无法连接。",
-    "showOnce":true,
-    "noticeId": "notice_20240117"
+    "noticeId": "notice_20240117",
+    "showOnce": true,
+    "backupNodes": {
+        "msg": "主节点不可用时，请开启备用节点",
+        "url": "https://your-server.com/api/backup-nodes"
+    }
 }
 ```
 
 **字段说明**:
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `hasNotice` | Boolean | 是否有公告 |
-| `title` | String | 公告标题 |
-| `content` | String | 公告内容 |
-| `showOnce` | Boolean | 公告只显示一次还是打开APP就显示 |
-| `noticeId` | String | 公告唯一ID（用于去重） |
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `hasNotice` | Boolean | ✅ | 是否有公告 |
+| `title` | String | ❌ | 公告标题 |
+| `content` | String | ❌ | 公告内容 |
+| `noticeId` | String | ❌ | 公告唯一ID（用于去重） |
+| `showOnce` | Boolean | ❌ | 是否只显示一次（默认 `true`） |
+| `backupNodes` | Object | ❌ | 备用节点配置（可选） |
+| `backupNodes.msg` | String | ❌ | 备用节点提示信息 |
+| `backupNodes.url` | String | ❌ | 备用订阅 URL（必须以 `http://` 或 `https://` 开头） |
+
+> 💡 **备用节点说明**：
+> - 当 `backupNodes.url` 存在且格式有效时，侧边栏会显示「备用节点」开关
+> - 备用订阅的响应格式与主订阅相同（Base64 编码的节点链接列表）
+> - 如果不需要备用节点功能，可省略整个 `backupNodes` 字段
 
 **配置位置**: `AppConfig.kt` → `NOTICE_URL`
 

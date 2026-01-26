@@ -20,6 +20,7 @@ import xyz.a202132.app.network.SubscriptionParser
 import xyz.a202132.app.network.DownloadManager
 import xyz.a202132.app.service.BoxVpnService
 import xyz.a202132.app.service.ServiceManager
+import xyz.a202132.app.util.NetworkUtils
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
@@ -42,6 +43,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val _notice = MutableStateFlow<NoticeInfo?>(null)
     val notice = _notice.asStateFlow()
+    
+    // Persistent notice config (independent of dialog visibility)
+    private val _noticeConfig = MutableStateFlow<NoticeInfo?>(null)
+    val noticeConfig = _noticeConfig.asStateFlow()
     
     private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
     val updateInfo = _updateInfo.asStateFlow()
@@ -175,12 +180,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 获取节点列表
      */
-    fun fetchNodes() {
+    val backupNodeEnabled = settingsRepository.backupNodeEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        false
+    )
+    
+    /**
+     * 获取节点列表
+     */
+    // 备用节点 URL (本地存储)
+    val backupNodeUrl = settingsRepository.backupNodeUrl.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        null
+    )
+    
+    /**
+     * 获取节点列表
+     */
+    /**
+     * @param skipBackupMode 强制跳过备用模式逻辑 (用于回退场景，避免 DataStore 异步更新导致重复触发)
+     */
+    fun fetchNodes(skipBackupMode: Boolean = false) {
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val result = subscriptionParser.fetchAndParse()
+                // 1. 检查网络状态
+                if (!NetworkUtils.isNetworkAvailable(getApplication())) {
+                    _isLoading.value = false
+                     _error.value = "当前无网络连接，无法获取节点"
+                    return@launch
+                }
+                
+                // 2. 检查是否开启备用节点 (skipBackupMode 时强制为 false)
+                val isBackupEnabled = if (skipBackupMode) false else backupNodeEnabled.value
+                var useBackup = false
+                var targetUrl: String? = null
+                
+                if (isBackupEnabled) {
+                    // 每次刷新都获取最新 Notice 配置，确保能检测到远程配置变化
+                    Log.d(tag, "Backup mode enabled, fetching latest notice config...")
+                    val notice = fetchNoticeSync()
+                    
+                    if (notice == null) {
+                        // Notice 请求失败 (服务器错误等)，触发回退
+                        Log.e(tag, "Failed to fetch notice for backup node")
+                        _error.value = "备用节点当前不可用，已退回默认节点！"
+                        handleBackupFallback()
+                        return@launch
+                    }
+                    
+                    // 验证备用节点配置有效性
+                    val backupUrl = notice.backupNodes?.url
+                    val isValidUrl = backupUrl != null && 
+                                     backupUrl.isNotBlank() && 
+                                     (backupUrl.startsWith("http://") || backupUrl.startsWith("https://"))
+                    
+                    if (isValidUrl) {
+                        useBackup = true
+                        targetUrl = backupUrl
+                        Log.d(tag, "Using backup node URL: $targetUrl")
+                    } else {
+                        // 配置无效 (无 backupNodes / 无 url / url 为空 / url 格式错误)
+                        // 触发完整回退
+                        Log.w(tag, "Backup node config invalid: backupNodes=$${notice.backupNodes}, url=$backupUrl")
+                        _error.value = "备用节点当前不可用，已退回默认节点！"
+                        handleBackupFallback()
+                        return@launch
+                    }
+                }
+                
+                val result = if (targetUrl != null) {
+                     subscriptionParser.fetchAndParse(targetUrl)
+                } else {
+                     subscriptionParser.fetchAndParse()
+                }
+
                 result.onSuccess { fetchedNodes ->
+                    // 检查由备用节点返回的空列表
+                    if (isBackupEnabled && fetchedNodes.isEmpty()) {
+                        Log.w(tag, "Backup node returned empty list, treating as failure")
+                        _error.value = "备用节点当前不可用，已退回默认节点！"
+                        handleBackupFallback()
+                        return@onSuccess
+                    }
+
                     // 保存到数据库
                     nodeDao.deleteAllNodes()
                     nodeDao.insertNodes(fetchedNodes)
@@ -191,7 +276,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     Log.d(tag, "Fetched ${fetchedNodes.size} nodes")
                 }.onFailure { e ->
                     Log.e(tag, "Failed to fetch nodes", e)
-                    _error.value = "获取节点失败: ${e.message}"
+                    if (isBackupEnabled) {
+                        // 备用节点请求失败 (非网络原因，或者是备用URL本身有问题/服务器挂了)
+                        // 需求: "各种失败情况...均删除备用节点按钮并清空本地存储备用节点url...发送toast备用节点当前不可用，已退回默认节点！"
+                        
+                        _error.value = "备用节点当前不可用，已退回默认节点！"
+                        
+                        // 执行回退操作 (关闭，清除URL，重试默认)
+                        handleBackupFallback()
+                    } else {
+                        _error.value = "获取节点失败: ${e.message}"
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(tag, "Error fetching nodes", e)
@@ -199,6 +294,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 _isLoading.value = false
             }
+        }
+    }
+    
+    // 处理备用节点回退逻辑
+    private suspend fun handleBackupFallback() {
+        // 1. 关闭备用节点开关
+        settingsRepository.setBackupNodeEnabled(false)
+        // 2. 清除备用节点 URL
+        settingsRepository.setBackupNodeUrl(null)
+        
+        // 3. 更新 Notice Config 以隐藏按钮
+        val currentConfig = _noticeConfig.value
+        if (currentConfig != null) {
+            _noticeConfig.value = currentConfig.copy(backupNodes = null)
+        }
+        
+        // 4. 重新请求，强制跳过备用模式 (避免 DataStore 异步更新导致重复触发)
+        fetchNodes(skipBackupMode = true)
+    }
+    
+    // 辅助: 同步获取 Notice
+    private suspend fun fetchNoticeSync(): NoticeInfo? {
+        return try {
+            val info = NetworkClient.apiService.getNoticeInfo(AppConfig.NOTICE_URL)
+            updateNoticeConfig(info)
+            info
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    private suspend fun updateNoticeConfig(info: NoticeInfo) {
+        _noticeConfig.value = info
+        
+        val backupInfo = info.backupNodes
+        val isValid = backupInfo?.url?.let { 
+             it.startsWith("http://") || it.startsWith("https://") 
+        } == true
+        
+        if (isValid) {
+            settingsRepository.setBackupNodeUrl(backupInfo!!.url)
+        } else {
+            // 无效配置，清除本地记录
+            settingsRepository.setBackupNodeUrl(null)
+            // 注意: 不在这里触发 handleBackupFallback，让 fetchNodes 的调用者统一处理
+            // 避免重复触发 Toast
+        }
+    }
+    
+    fun setBackupNodeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            // 如果 VPN 正在运行，先停止（因为节点来源将改变）
+            if (vpnState.value != VpnState.DISCONNECTED) {
+                Log.d(tag, "Stopping VPN before switching node source")
+                ServiceManager.stopVpn(getApplication())
+                // 等待 VPN 停止
+                delay(500)
+            }
+            
+            // 清除当前选中的节点（因为它可能不在新列表中）
+            settingsRepository.setSelectedNodeId(null)
+            
+            // 切换设置
+            settingsRepository.setBackupNodeEnabled(enabled)
+            delay(100)
+            
+            // 获取新的节点列表
+            fetchNodes()
         }
     }
     
@@ -231,30 +394,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         
         Log.d(tag, "Testing ${currentNodes.size} nodes")
         
-        // 检查VPN服务是否运行
-        if (ServiceManager.isServiceRunning.value) {
-            Log.d(tag, "VPN is running, using libbox URLTest")
-            try {
-                Log.d(tag, "Waiting for libbox background test results...")
-                // 这里不需要做什么，只需等待 BoxVpnService 更新数据库
-            } catch (e: Exception) {
-                Log.e(tag, "Error triggering libbox test", e)
-            }
-        } else {
-            Log.d(tag, "VPN not running, using Socket test")
-            // 使用 LatencyTester 进行测试
-            val results = latencyTester.testAllNodes(currentNodes)
-            Log.d(tag, "Got ${results.size} test results (Socket)")
-            
-            // 更新数据库
-            results.forEach { result ->
-                nodeDao.updateLatency(
-                    nodeId = result.nodeId,
-                    latency = result.latency,
-                    isAvailable = result.isAvailable,
-                    testedAt = System.currentTimeMillis()
-                )
-            }
+        // 统一使用 Socket 测试 (直接连接节点服务器测试可达性)
+        // 即使 VPN 运行中也可以工作，因为测试的是节点服务器本身
+        val results = latencyTester.testAllNodes(currentNodes)
+        Log.d(tag, "Got ${results.size} test results")
+        
+        // 更新数据库
+        results.forEach { result ->
+            nodeDao.updateLatency(
+                nodeId = result.nodeId,
+                latency = result.latency,
+                isAvailable = result.isAvailable,
+                testedAt = System.currentTimeMillis()
+            )
         }
     }
 
@@ -368,6 +520,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         
         when (vpnState.value) {
             VpnState.DISCONNECTED -> {
+                // 4. 无网络连接节点时给用户发Toast，但不阻止
+                if (!NetworkUtils.isNetworkAvailable(getApplication())) {
+                     _error.value = "当前无网络连接节点！"
+                }
                 ServiceManager.startVpn(getApplication(), node, proxyMode.value)
             }
             VpnState.CONNECTED -> {
@@ -419,6 +575,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun checkNotice() {
         try {
             val noticeInfo = NetworkClient.apiService.getNoticeInfo(AppConfig.NOTICE_URL)
+            
+            // Always update config for features like Backup Node
+            _noticeConfig.value = noticeInfo
+            
             if (noticeInfo.hasNotice) {
                 // 如果 showOnce 为 true，检查是否已显示过
                 // 如果 showOnce 为 false，则每次都显示
@@ -438,7 +598,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(tag, "Failed to check notice", e)
         }
     }
-
+    
+    /**
+     * 检查更新
+     */
     /**
      * 检查更新
      * @param isAuto 是否为自动检查 (不显示"已是最新"提示)

@@ -31,6 +31,10 @@ class SettingsRepository(private val context: Context) {
         
         // IPv6 路由设置
         private val IPV6_ROUTING_MODE = stringPreferencesKey("ipv6_routing_mode")
+        
+        // 备用节点
+        private val BACKUP_NODE_ENABLED = booleanPreferencesKey("backup_node_enabled")
+        private val BACKUP_NODE_URL = stringPreferencesKey("backup_node_url")
     }
     
     val selectedNodeId: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -154,6 +158,31 @@ class SettingsRepository(private val context: Context) {
     suspend fun setIPv6RoutingMode(mode: IPv6RoutingMode) {
         context.dataStore.edit { preferences ->
             preferences[IPV6_ROUTING_MODE] = mode.name
+        }
+    }
+    
+    // 备用节点
+    val backupNodeEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[BACKUP_NODE_ENABLED] ?: false
+    }
+    
+    suspend fun setBackupNodeEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[BACKUP_NODE_ENABLED] = enabled
+        }
+    }
+    
+    val backupNodeUrl: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[BACKUP_NODE_URL]
+    }
+    
+    suspend fun setBackupNodeUrl(url: String?) {
+        context.dataStore.edit { preferences ->
+            if (url == null) {
+                preferences.remove(BACKUP_NODE_URL)
+            } else {
+                preferences[BACKUP_NODE_URL] = url
+            }
         }
     }
 }

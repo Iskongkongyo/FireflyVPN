@@ -36,7 +36,21 @@ data class NoticeInfo(
     val noticeId: String = "",
     
     @SerializedName("showOnce")
-    val showOnce: Boolean = true
+    val showOnce: Boolean = true,
+    
+    @SerializedName("backupNodes")
+    val backupNodes: BackupNodeInfo? = null
+)
+
+/**
+ * 备用节点信息
+ */
+data class BackupNodeInfo(
+    @SerializedName("msg")
+    val msg: String? = null,
+    
+    @SerializedName("url")
+    val url: String? = null
 )
 
 /**

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,10 +38,20 @@ fun DrawerContent(
     onToggleBypassLan: (Boolean) -> Unit,
     ipv6RoutingMode: IPv6RoutingMode,
     onIPv6RoutingModeChange: (IPv6RoutingMode) -> Unit,
+    notice: xyz.a202132.app.data.model.NoticeInfo?,
+    backupNodeEnabled: Boolean,
+    onToggleBackupNode: (Boolean) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
     var showIPv6Dialog by remember { mutableStateOf(false) }
+    var showBackupNodeConfirmDialog by remember { mutableStateOf(false) }
+    
+    // 检查备用节点是否可用
+    val backupNodeInfo = notice?.backupNodes
+    val isBackupNodeVisible = backupNodeInfo?.url?.let { 
+        it.startsWith("http://") || it.startsWith("https://") 
+    } == true
     
     Column(
         modifier = Modifier
@@ -68,6 +79,25 @@ fun DrawerContent(
                 onClose()
             }
         )
+
+        // 备用节点 (仅在有效时显示)
+        if (isBackupNodeVisible) {
+            DrawerMenuToggle(
+                icon = Icons.Outlined.Backup,
+                title = "备用节点",
+                subtitle = if (backupNodeEnabled) "已开启" else "已关闭",
+                checked = backupNodeEnabled,
+                onCheckedChange = { isChecked ->
+                    if (isChecked) {
+                        // 开启时显示确认对话框
+                        showBackupNodeConfirmDialog = true
+                    } else {
+                        // 关闭直接执行
+                        onToggleBackupNode(false)
+                    }
+                }
+            )
+        }
 
         // IPv6 路由菜单项
         DrawerMenuItem(
@@ -160,6 +190,38 @@ fun DrawerContent(
                 ).show()
             },
             onDismiss = { showIPv6Dialog = false }
+        )
+    }
+    
+    // 备用节点开启确认弹窗
+    if (showBackupNodeConfirmDialog && backupNodeInfo != null) {
+        AlertDialog(
+            onDismissRequest = { showBackupNodeConfirmDialog = false },
+            title = { Text("开启备用节点") },
+            text = { 
+                Text(
+                    text = if (!backupNodeInfo.msg.isNullOrBlank()) {
+                        backupNodeInfo.msg
+                    } else {
+                        "开启后，节点列表只会显示备用节点信息！"
+                    }
+                ) 
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onToggleBackupNode(true)
+                        showBackupNodeConfirmDialog = false
+                    }
+                ) {
+                    Text("是")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackupNodeConfirmDialog = false }) {
+                    Text("否")
+                }
+            }
         )
     }
 }
