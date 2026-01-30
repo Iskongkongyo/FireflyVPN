@@ -167,7 +167,7 @@ private fun NodeListItem(
                 Column {
                     // 节点名称
                     Text(
-                        text = node.name,
+                        text = node.getDisplayName(),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = if (node.isAvailable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,

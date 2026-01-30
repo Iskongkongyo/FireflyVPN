@@ -42,19 +42,28 @@ fun NodeSelector(
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 图标
+                // 图标 (有节点时显示国旗，否则显示循环图标)
                 Box(
                     modifier = Modifier
                         .size(40.dp)
                         .background(Primary.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = null,
-                        tint = Primary,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    if (currentNode != null) {
+                        // 显示国旗
+                        Text(
+                            text = currentNode.getFlagEmoji(),
+                            fontSize = 22.sp
+                        )
+                    } else {
+                        // 显示循环图标
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = null,
+                            tint = Primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
                 
                 Spacer(modifier = Modifier.width(12.dp))
@@ -62,21 +71,13 @@ fun NodeSelector(
                 Column {
                     
                     if (currentNode != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = currentNode.getFlagEmoji(),
-                                fontSize = 16.sp
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = currentNode.name,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        // 只显示节点名称（不显示国旗）
+                        Text(
+                            text = currentNode.getDisplayName(),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     } else {
                         Text(
                             text = "点击选择节点",

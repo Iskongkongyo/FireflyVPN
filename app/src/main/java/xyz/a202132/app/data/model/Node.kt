@@ -62,6 +62,39 @@ data class Node(
     }
     
     /**
+     * 获取显示名称（去除国旗emoji）
+     */
+    fun getDisplayName(): String {
+        val result = StringBuilder()
+        var i = 0
+        while (i < name.length) {
+            val codePoint = name.codePointAt(i)
+            val charCount = Character.charCount(codePoint)
+            
+            // Check if current code point is a Regional Indicator Symbol (U+1F1E6 to U+1F1FF)
+            if (codePoint in 0x1F1E6..0x1F1FF) {
+                // Skip this character and potentially the next one if it's also a flag
+                if (i + charCount < name.length) {
+                    val nextCodePoint = name.codePointAt(i + charCount)
+                    if (nextCodePoint in 0x1F1E6..0x1F1FF) {
+                        // Skip both characters (the flag pair)
+                        i += charCount + Character.charCount(nextCodePoint)
+                        continue
+                    }
+                }
+                // Single regional indicator, skip it
+                i += charCount
+                continue
+            }
+            
+            // Keep this character
+            result.append(String(Character.toChars(codePoint)))
+            i += charCount
+        }
+        return result.toString().trim()
+    }
+    
+    /**
      * 获取延迟显示文本
      */
     fun getLatencyText(): String {
