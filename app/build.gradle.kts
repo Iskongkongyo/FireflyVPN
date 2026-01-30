@@ -5,6 +5,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
+    id("stringfog")
 }
 
 android {
@@ -21,6 +22,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+
+        ndk {
+            // sing-box核心默认打包了所有架构（armeabi-v7a, arm64-v8a, x86, x86_64）的动态库（.so 文件）
+            // 仅保留 ARM 架构，x86和x86_64架构被剔除以减小 APK 体积
+            abiFilters.add("armeabi-v7a")
+            abiFilters.add("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags("")
+                // 限制只打包 ARM 架构的 .so 文件
+                abiFilters("armeabi-v7a", "arm64-v8a")
+            }
         }
     }
 
@@ -81,6 +97,13 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
@@ -131,4 +154,16 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // StringFog Runtime
+    implementation("com.github.megatronking.stringfog:xor:5.0.0")
+}
+
+// StringFog字符串混淆
+configure<com.github.megatronking.stringfog.plugin.StringFogExtension> {
+    implementation = "com.github.megatronking.stringfog.xor.StringFogImpl"
+    enable = true
+    fogPackages = arrayOf("xyz.a202132.app") // 只加密我们自己的代码
+    kg = com.github.megatronking.stringfog.plugin.kg.RandomKeyGenerator()
+    mode = com.github.megatronking.stringfog.plugin.StringFogMode.base64
 }

@@ -37,17 +37,58 @@ class SubscriptionParser {
      * 解析订阅内容
      */
     fun parseSubscription(content: String): List<Node> {
-        val decoded = try {
-            // 尝试Base64解码
-            String(Base64.decode(content.trim(), Base64.DEFAULT), Charsets.UTF_8)
+        Log.d(tag, "Original content length: ${content.length}")
+        Log.d(tag, "Original content preview: ${content.take(100)}...")
+
+        var finalContent = ""
+        
+        try {
+            var decrypted = xyz.a202132.app.util.CryptoUtils.decryptNodes(content.trim())
+            Log.d(tag, "Decryption result preview: ${decrypted.take(100)}...")
+             
+            // 如果解密成功但不含 "://"，可能是先 Base64 编码再 AES 加密的
+            // 尝试再做一次 Base64 解码
+            if (!decrypted.startsWith("Error") && !decrypted.contains("://")) {
+                Log.d(tag, "Decrypted content has no '://', trying extra Base64 decode...")
+                try {
+                    val extraDecoded = String(Base64.decode(decrypted.trim(), Base64.DEFAULT), Charsets.UTF_8)
+                    if (extraDecoded.contains("://")) {
+                        decrypted = extraDecoded
+                        Log.d(tag, "✅ Extra Base64 decode successful")
+                    }
+                } catch (e: Exception) {
+                    Log.d(tag, "Extra Base64 decode failed, using original decrypted content")
+                }
+            }
+             
+            // 校验：如果解密结果包含 "://" (说明是明文链接)，且没有返回 Error
+            if (!decrypted.startsWith("Error") && decrypted.contains("://")) {
+                finalContent = decrypted
+                Log.d(tag, "✅ AES decryption successful, using decrypted content")
+            } else {
+                Log.d(tag, "⚠️ AES decryption result invalid (no '://' or error header), falling back")
+            }
         } catch (e: Exception) {
-            // 如果解码失败，可能已经是纯文本
-            content
+            Log.e(tag, "❌ AES decryption failed/skipped: ${e.message}")
+        }
+
+        // 如果 AES 没拿到有效内容，尝试 Legacy Base64 解码
+        if (finalContent.isEmpty()) {
+            Log.d(tag, "Falling back to Legacy Base64 decoding...")
+            finalContent = try {
+                String(Base64.decode(content.trim(), Base64.DEFAULT), Charsets.UTF_8)
+            } catch (e: Exception) {
+                // 如果 Base64 也挂了，可能是纯文本
+                Log.w(tag, "Legacy Base64 decode failed, using raw content")
+                content
+            }
         }
         
-        val lines = decoded.split("\n", "\r\n")
+        val lines = finalContent.split("\n", "\r\n")
             .map { it.trim() }
             .filter { it.isNotEmpty() }
+            
+        Log.d(tag, "Parsed ${lines.size} lines")
         
         return lines.mapNotNull { parseNodeLink(it) }
     }

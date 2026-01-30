@@ -277,6 +277,157 @@ IPv6 路由功能允许用户控制 VPN 对 IPv6 网络的处理方式。
 
 ---
 
+## 安全特性
+
+本项目内置多层安全防护机制，防止 APK 被逆向分析、篡改或抓包复制订阅。
+
+### 1. 字符串混淆 (StringFog)
+
+使用 [StringFog](https://github.com/niceyun/gradle-stringfog-plugin) 插件对代码中的硬编码字符串进行加密混淆。
+
+**效果**：反编译后无法直接看到 API 地址、密钥等敏感字符串。
+
+**配置位置**：`app/build.gradle.kts`
+
+```kotlin
+stringfog {
+    implementation = "com.niceyun.StringFogImpl"
+    enable = true
+    mode = StringFogMode.base64
+}
+```
+
+---
+
+### 2. NDK 密钥存储
+
+AES 加密密钥存储在 Native (C++) 层，通过 XOR 混淆防止静态分析。
+
+**密钥文件**：`app/src/main/cpp/native-lib.cpp`
+
+#### 如何修改 AES 密钥
+
+1. 确定你的 16 位密钥（AES-128 要求恰好 16 字节），例如：`MySecretKey12345`
+
+2. 使用以下 Python 脚本生成混淆后的字节数组：
+
+```python
+key = "MySecretKey12345"  # 必须是 16 个字符
+SEED = 0x33
+
+encrypted = []
+for i, c in enumerate(key):
+    encrypted.append(hex(ord(c) ^ (SEED + i)))
+    
+print("unsigned char encrypted_key[] = {")
+for i, v in enumerate(encrypted):
+    print(f"        {v}, // '{key[i]}' ^ (0x33 + {i})")
+print("        0x00  // Null terminator")
+print("};")
+```
+
+3. 将输出替换到 `native-lib.cpp` 中的 `encrypted_key` 数组
+
+4. **同步修改服务端加密密钥**
+
+---
+
+### 3. AES 流量加密
+
+节点订阅数据在服务端加密后传输，APP 端使用 Java Crypto API 解密。
+
+#### 服务端加密要求
+
+| 参数 | 值 |
+| :--- | :--- |
+| **算法** | AES-128-GCM |
+| **IV 长度** | 12 字节 (随机生成) |
+| **认证标签** | 128 位 (16 字节) |
+| **密钥** | 与 `native-lib.cpp` 中配置的相同（16 字节） |
+| **输出格式** | Base64(IV + 密文 + AuthTag) |
+
+#### 服务端加密流程
+
+```
+明文节点链接 → AES-GCM加密(生成随机IV) → 拼接(IV + 密文 + AuthTag) → Base64编码 → 返回给APP
+```
+
+#### AES-GCM vs AES-ECB
+
+| 特性 | AES-ECB | AES-GCM ✅ |
+|------|---------|------------|
+| 需要 IV | ❌ | ✅ (12字节) |
+| 认证标签 | ❌ | ✅ (防篡改) |
+| 相同明文→相同密文 | ✅ (有风险) | ❌ (每次不同) |
+| 安全性 | 基础 | 更高 |
+
+#### Node.js 加密示例
+
+```javascript
+const crypto = require('crypto');
+
+const SECRET_KEY = 'MySecretKey12345';  // 16 字节密钥，与 APP 一致
+
+function encrypt(plaintext) {
+    // 生成随机 12 字节 IV
+    const iv = crypto.randomBytes(12);
+    
+    // 创建 cipher
+    const cipher = crypto.createCipheriv('aes-128-gcm', Buffer.from(SECRET_KEY), iv);
+    
+    // 加密
+    let encrypted = cipher.update(plaintext, 'utf8');
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+    
+    // 获取 AuthTag (16 字节)
+    const authTag = cipher.getAuthTag();
+    
+    // 拼接: IV (12) + 密文 + AuthTag (16)
+    const combined = Buffer.concat([iv, encrypted, authTag]);
+    
+    // 返回 Base64
+    return combined.toString('base64');
+}
+
+// 使用示例
+const nodes = `hysteria2://uuid@server:port?sni=example.com#节点名称
+vless://uuid@server:port?security=tls#另一个节点`;
+
+const encrypted = encrypt(nodes);
+// 将 encrypted 作为 API 响应返回
+```
+
+---
+
+### 4. 签名校验 (Signature Verification)
+
+APP 启动时在 Native 层校验 APK 签名。如果签名不匹配（说明被重新签名/篡改），APP 会立即 Crash。
+
+**签名文件**：`app/src/main/cpp/native-lib.cpp`
+
+#### 如何设置签名 SHA-256
+
+1. 获取你的 Release 签名证书 SHA-256 值：
+
+```powershell
+# 使用 Android Studio 自带的 JDK
+& "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -list -v -keystore your-release-key.jks -alias your-alias
+```
+
+2. 复制输出中的 `SHA256:` 值（格式如 `95:CA:C5:8A:...`）
+
+3. 去掉冒号，转成大写，替换 `native-lib.cpp` 中的 `EXPECTED_SIGNATURE`：
+
+```cpp
+static const char* EXPECTED_SIGNATURE = "95CAC58A...";
+```
+
+4. 重新 Clean → Rebuild 项目
+
+> ⚠️ **注意**：每次更换签名证书后，都需要更新此值，否则 APP 将无法启动。
+
+---
+
 ## API 接口
 
 ### 1. 节点订阅接口
@@ -326,7 +477,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@server:8388#SS节点
 |------|------|------|
 | `version` | String | 版本号（显示用） |
 | `versionCode` | Int | 版本代码（用于比较） |
-| is_force | Int | 是否强制更新（1为强制更新） |
+| `is_force` | Int | 是否强制更新（1为强制更新） |
 | `downloadUrl` | String | APK 下载地址 |
 | `changelog` | String | 更新日志 |
 

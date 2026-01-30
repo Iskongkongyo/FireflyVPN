@@ -299,18 +299,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     // 处理备用节点回退逻辑
     private suspend fun handleBackupFallback() {
+        // 0. 如果 VPN 正在运行，先停止（因为节点来源已失效）
+        if (vpnState.value != VpnState.DISCONNECTED) {
+            Log.d(tag, "Stopping VPN before backup fallback")
+            ServiceManager.stopVpn(getApplication())
+            delay(500) // 等待 VPN 停止
+        }
+        
         // 1. 关闭备用节点开关
         settingsRepository.setBackupNodeEnabled(false)
         // 2. 清除备用节点 URL
         settingsRepository.setBackupNodeUrl(null)
+        // 3. 清除当前选中的节点（备用节点 ID 在默认列表中不存在）
+        settingsRepository.setSelectedNodeId(null)
         
-        // 3. 更新 Notice Config 以隐藏按钮
+        // 4. 更新 Notice Config 以隐藏按钮
         val currentConfig = _noticeConfig.value
         if (currentConfig != null) {
             _noticeConfig.value = currentConfig.copy(backupNodes = null)
         }
         
-        // 4. 重新请求，强制跳过备用模式 (避免 DataStore 异步更新导致重复触发)
+        // 5. 重新请求，强制跳过备用模式 (避免 DataStore 异步更新导致重复触发)
         fetchNodes(skipBackupMode = true)
     }
     

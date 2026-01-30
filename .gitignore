@@ -1,6 +1,5 @@
 # Built application files
 *.apk
-*.aar
 *.ap_
 *.aab
 
@@ -18,6 +17,17 @@ out/
 # Gradle files
 .gradle/
 build/
+
+# 压缩包
+*.rar
+*.zip
+*.7z
+
+# vscode
+.vscode/
+
+# NDK/CMake build files
+.cxx/
 
 # Local configuration file (sdk.dir is not checked in)
 local.properties
