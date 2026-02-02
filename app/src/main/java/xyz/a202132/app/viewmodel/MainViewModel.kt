@@ -31,6 +31,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val subscriptionParser = SubscriptionParser()
     private val latencyTester = LatencyTester()
     
+    // 节流控制
+    private val THROTTLE_INTERVAL = 5000L // 5秒节流间隔
+    private var lastFetchNodesTime = 0L
+    private var lastBackupSwitchTime = 0L
+    private var lastCheckUpdateTime = 0L
+    
     // UI State
     private val _isLoading = MutableStateFlow(false)
     val isLoading = _isLoading.asStateFlow()
@@ -125,7 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 监听用户协议状态，只有同意后才初始化网络请求
             isUserAgreementAccepted.collect { accepted ->
                 if (accepted) {
-                    fetchNodes()
+                    fetchNodes(bypassThrottle = true)
                     checkNotice()
                     checkUpdate(isAuto = true)
                 }
@@ -202,8 +208,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * @param skipBackupMode 强制跳过备用模式逻辑 (用于回退场景，避免 DataStore 异步更新导致重复触发)
      */
-    fun fetchNodes(skipBackupMode: Boolean = false) {
+    fun fetchNodes(skipBackupMode: Boolean = false, bypassThrottle: Boolean = false) {
         viewModelScope.launch {
+            // 节流检查 (内部调用可跳过)
+            if (!bypassThrottle) {
+                val now = System.currentTimeMillis()
+                if (now - lastFetchNodesTime < THROTTLE_INTERVAL) {
+                    _error.value = "操作过于频繁，请稍后再试"
+                    return@launch
+                }
+                lastFetchNodesTime = now
+            }
+            
             _isLoading.value = true
             try {
                 // 1. 检查网络状态
@@ -320,7 +336,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         // 5. 重新请求，强制跳过备用模式 (避免 DataStore 异步更新导致重复触发)
-        fetchNodes(skipBackupMode = true)
+        fetchNodes(skipBackupMode = true, bypassThrottle = true)
     }
     
     // 辅助: 同步获取 Notice
@@ -354,6 +370,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun setBackupNodeEnabled(enabled: Boolean) {
         viewModelScope.launch {
+            // 节流检查
+            val now = System.currentTimeMillis()
+            if (now - lastBackupSwitchTime < THROTTLE_INTERVAL) {
+                _error.value = "切换过于频繁，请稍后再试"
+                return@launch
+            }
+            lastBackupSwitchTime = now
+            
             // 如果 VPN 正在运行，先停止（因为节点来源将改变）
             if (vpnState.value != VpnState.DISCONNECTED) {
                 Log.d(tag, "Stopping VPN before switching node source")
@@ -369,8 +393,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             settingsRepository.setBackupNodeEnabled(enabled)
             delay(100)
             
-            // 获取新的节点列表
-            fetchNodes()
+            // 获取新的节点列表 (跳过节流检查，因为这是内部调用)
+            fetchNodes(bypassThrottle = true)
         }
     }
     
@@ -608,15 +632,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
-    /**
-     * 检查更新
-     */
+    
     /**
      * 检查更新
      * @param isAuto 是否为自动检查 (不显示"已是最新"提示)
      */
     fun checkUpdate(isAuto: Boolean = false) {
         viewModelScope.launch {
+            // 节流检查 (自动检查可跳过)
+            if (!isAuto) {
+                val now = System.currentTimeMillis()
+                if (now - lastCheckUpdateTime < THROTTLE_INTERVAL) {
+                    _error.value = "操作过于频繁，请稍后再试"
+                    return@launch
+                }
+                lastCheckUpdateTime = now
+            }
+            
             try {
                 val info = NetworkClient.apiService.getUpdateInfo(AppConfig.UPDATE_URL)
                 val currentVersionCode = getApplication<Application>().packageManager

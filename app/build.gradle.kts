@@ -16,8 +16,8 @@ android {
         applicationId = "xyz.a202132.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -95,6 +95,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        // 压缩 native libraries 以减小 APK 体积
+        // 代价是首次启动时需要解压，略慢一点点
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
