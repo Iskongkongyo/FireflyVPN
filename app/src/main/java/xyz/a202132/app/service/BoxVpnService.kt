@@ -452,20 +452,47 @@ class BoxVpnService : VpnService() {
         }
     }
     
-    private suspend fun stopVpnInternal() {
+    private fun cleanupResources() {
         try {
-            // 停止流量监控
+            // 保存引用以便后续清理
+            val pi = platformInterface
+            platformInterface = null
+            
+            // 0. 最优先关闭 TUN 接口，确保系统状态栏 VPN 图标立即消失
+            try {
+                pi?.closeTun()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing TUN", e)
+            }
+            
+            // 1. 停止流量监控
             stopTrafficMonitor()
             stopCommandClient()
             
-            // 停止 BoxService
-            boxService?.close()
+            // 2. 停止 Network Monitor
+            pi?.stopNetworkMonitor()
+            
+            // 3. 停止 BoxService
+            try {
+                boxService?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing boxService", e)
+            }
             boxService = null
             
-            // 停止网络监控并关闭 TUN
-            platformInterface?.stopNetworkMonitor()
-            platformInterface?.closeTun()
-            platformInterface = null
+            Log.d(TAG, "Resources cleaned up")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cleaning up resources", e)
+        }
+    }
+    
+    private suspend fun stopVpnInternal() {
+        try {
+            // 切换到 IO 线程执行清理，避免主线程卡顿（如果 cleanup 耗时）
+            // 但对于 onDestroy，我们必须同步清理
+            withContext(Dispatchers.IO) {
+                cleanupResources()
+            }
             
             withContext(Dispatchers.Main) {
                 isRunning = false
@@ -492,10 +519,24 @@ class BoxVpnService : VpnService() {
     }
     
     override fun onDestroy() {
+        Log.d(TAG, "onDestroy")
+        // 立即取消所有协程
         serviceScope.cancel()
+        
+        // 确保资源被清理（特别是 TUN 接口）
+        // 即使 stopVpnInternal 正在运行，这里再次调用也是安全的（已做空判断）
+        cleanupResources()
+        
+        // 更新状态
+        isRunning = false
         if (instance == this) {
             instance = null
         }
+        
+        // 通知 UI (防止 UI 停留在已连接状态)
+        // 注意：onDestroy 后 ServiceManager可能无法立即通知到已销毁的 Activity，但 StateFlow 会更新
+        ServiceManager.notifyStateChange()
+        
         super.onDestroy()
     }
     
