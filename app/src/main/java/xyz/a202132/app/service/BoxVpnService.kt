@@ -31,6 +31,7 @@ class BoxVpnService : VpnService() {
         
         const val ACTION_START = "xyz.a202132.app.START_VPN"
         const val ACTION_STOP = "xyz.a202132.app.STOP_VPN"
+        const val ACTION_RESTART = "xyz.a202132.app.RESTART_VPN"
         const val EXTRA_NODE_RAW_LINK = "node_raw_link"
         const val EXTRA_NODE_NAME = "node_name"
         const val EXTRA_PROXY_MODE = "proxy_mode"
@@ -93,6 +94,10 @@ class BoxVpnService : VpnService() {
             }
             ACTION_STOP -> {
                 stopVpn()
+            }
+            ACTION_RESTART -> {
+                // 重置连接：停止后重新启动
+                restartVpn()
             }
             else -> {
                 // 未知 action，启动前台服务然后停止
@@ -400,6 +405,8 @@ class BoxVpnService : VpnService() {
                             // 通知 UI 更新
                             withContext(Dispatchers.Main) {
                                 ServiceManager.notifyStateChange()
+                                // 同时更新通知栏
+                                currentNodeName?.let { updateNotification(it) }
                             }
                         }
                     }
@@ -448,6 +455,73 @@ class BoxVpnService : VpnService() {
             withContext(Dispatchers.Main) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            }
+        }
+    }
+    
+    private fun restartVpn() {
+        Log.d(TAG, "Restarting VPN")
+        
+        serviceScope.launch {
+            // 保存当前配置
+            val savedNodeName = currentNodeName
+            
+            // 停止当前连接
+            stopVpnInternal()
+            
+            // 短暂延迟确保资源完全释放
+            delay(500)
+            
+            // 重新启动（使用当前节点）
+            if (savedNodeName != null) {
+                // 通知 UI 更新
+                withContext(Dispatchers.Main) {
+                    updateNotification(savedNodeName)
+                }
+                
+                // 获取节点信息并重新连接
+                val nodeDao = xyz.a202132.app.data.local.AppDatabase.getInstance(application).nodeDao()
+                val allNodes = try {
+                    nodeDao.getAllNodes().first()
+                } catch (e: Exception) {
+                    emptyList<xyz.a202132.app.data.model.Node>()
+                }
+                
+                if (allNodes.isNotEmpty()) {
+                    // 读取代理模式
+                    val settingsRepo = xyz.a202132.app.data.repository.SettingsRepository(application)
+                    val proxyMode = try {
+                        settingsRepo.proxyMode.first()
+                    } catch (e: Exception) {
+                        ProxyMode.SMART
+                    }
+                    
+                    // 读取绕过局域网设置
+                    val bypassLan = try {
+                        settingsRepo.bypassLan.first()
+                    } catch (e: Exception) {
+                        true
+                    }
+                    
+                    // 读取 IPv6 路由模式
+                    val ipv6Mode = try {
+                        settingsRepo.ipv6RoutingMode.first()
+                    } catch (e: Exception) {
+                        xyz.a202132.app.data.model.IPv6RoutingMode.DISABLED
+                    }
+                    
+                    // 获取选中的节点
+                    val selectedNodeId = try {
+                        settingsRepo.selectedNodeId.first()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    
+                    val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan, ipv6Mode)
+                    val configFile = saveConfigToFile(config)
+                    
+                    initializeLibbox(configFile.absolutePath, savedNodeName)
+                }
             }
         }
     }
@@ -557,10 +631,16 @@ class BoxVpnService : VpnService() {
     }
     
     private fun createNotification(nodeName: String): Notification {
+        return buildNotification(nodeName, uploadSpeed, downloadSpeed)
+    }
+    
+    private fun buildNotification(nodeName: String, upSpeed: Long, downSpeed: Long): Notification {
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
@@ -573,15 +653,46 @@ class BoxVpnService : VpnService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
+        val restartIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, BoxVpnService::class.java).apply {
+                action = ACTION_RESTART
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        // 格式化速度显示
+        val upSpeedStr = ServiceManager.formatSpeed(upSpeed)
+        val downSpeedStr = ServiceManager.formatSpeed(downSpeed)
+        
+        // 构建通知内容 - 默认显示速度，展开显示总流量
+        val contentText = "上传 $upSpeedStr  下载 $downSpeedStr"
+        
         return NotificationCompat.Builder(this, AppConfig.NOTIFICATION_CHANNEL_ID)
-            .setContentTitle(getString(R.string.vpn_notification_title))
-            .setContentText(getString(R.string.vpn_notification_content, nodeName))
+            .setContentTitle(nodeName)
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("上传 $upSpeedStr   累计 ${ServiceManager.formatTraffic(uploadTotal)}\n下载 $downSpeedStr   累计 ${ServiceManager.formatTraffic(downloadTotal)}"))
             .setSmallIcon(R.drawable.ic_vpn_key)
             .setContentIntent(pendingIntent)
             .addAction(R.drawable.ic_vpn_key, "断开连接", stopIntent)
+            .addAction(R.drawable.ic_vpn_key, "重置连接", restartIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true) // 更新时不发出声音
             .build()
+    }
+    
+    /**
+     * 更新通知内容（带宽信息）
+     */
+    private fun updateNotification(nodeName: String) {
+        if (!isRunning) return
+        
+        val notification = buildNotification(nodeName, uploadSpeed, downloadSpeed)
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(AppConfig.NOTIFICATION_ID, notification)
     }
     
     /**

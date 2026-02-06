@@ -10,6 +10,7 @@ enum class NodeType(val protocol: String) {
     HYSTERIA2("hysteria2"),
     SHADOWSOCKS("ss"),
     SOCKS("socks"),
+    HTTP("http"),
     UNKNOWN("unknown");
     
     companion object {
@@ -20,7 +21,8 @@ enum class NodeType(val protocol: String) {
                 link.startsWith("trojan://") -> TROJAN
                 link.startsWith("hysteria2://") || link.startsWith("hy2://") -> HYSTERIA2
                 link.startsWith("ss://") -> SHADOWSOCKS
-                link.startsWith("socks://") -> SOCKS
+                link.startsWith("socks://") || link.startsWith("socks5://") || link.startsWith("socks4://") -> SOCKS
+                link.startsWith("http://") || link.startsWith("https://") -> HTTP
                 else -> UNKNOWN
             }
         }

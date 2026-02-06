@@ -104,7 +104,8 @@ class SubscriptionParser {
                 link.startsWith("trojan://") -> parseTrojanLink(link)
                 link.startsWith("hysteria2://") || link.startsWith("hy2://") -> parseHysteria2Link(link)
                 link.startsWith("ss://") -> parseShadowsocksLink(link)
-                link.startsWith("socks://") -> parseSocksLink(link)
+                link.startsWith("socks://") || link.startsWith("socks5://") || link.startsWith("socks4://") -> parseSocksLink(link)
+                link.startsWith("http://") || link.startsWith("https://") -> parseHttpLink(link)
                 else -> null
             }
         } catch (e: Exception) {
@@ -232,6 +233,7 @@ class SubscriptionParser {
     /**
      * 解析 Socks 链接
      * 格式: socks://user:pass@host:port#name
+     * 也支持: socks5://... 和 socks4://...
      */
     private fun parseSocksLink(link: String): Node {
         val uri = Uri.parse(link)
@@ -243,6 +245,28 @@ class SubscriptionParser {
             id = generateId(link),
             name = name,
             type = NodeType.SOCKS,
+            server = server,
+            port = port,
+            rawLink = link
+        )
+    }
+    
+    /**
+     * 解析 HTTP/HTTPS 代理链接
+     * 格式: http://user:pass@host:port#name
+     * 或: https://user:pass@host:port#name
+     */
+    private fun parseHttpLink(link: String): Node {
+        val uri = Uri.parse(link)
+        val name = URLDecoder.decode(uri.fragment ?: "HTTP Proxy", "UTF-8")
+        val server = uri.host ?: ""
+        val defaultPort = if (link.startsWith("https://")) 443 else 80
+        val port = if (uri.port == -1) defaultPort else uri.port
+        
+        return Node(
+            id = generateId(link),
+            name = name,
+            type = NodeType.HTTP,
             server = server,
             port = port,
             rawLink = link

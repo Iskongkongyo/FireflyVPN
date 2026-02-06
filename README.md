@@ -8,8 +8,6 @@
 <p align="center">
   流萤加速器一款基于 sing-box 核心，支持多种代理协议和智能分流的 Android VPN 客户端。
 </p>
-
-
 <p align="center">
   <a href="#功能特性">功能特性</a> •
   <a href="#技术架构">技术架构</a> •
@@ -33,7 +31,7 @@
 
 ## 功能特性
 
-- 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、Shadowsocks、SOCKS5
+- 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、Shadowsocks、SOCKS4/5、HTTP/HTTPS 代理
 - 🧭 **智能分流**：国内流量直连，国外流量代理，自动识别主流 CN 应用/CDN
 - ⚡ **自动选择**：一键测速，自动选择最优节点
 - 📦 **分应用代理**：精细控制哪些应用走代理或绕过 VPN
@@ -41,6 +39,8 @@
 - 🌍 **IPv6 路由**：支持 IPv6 网络访问，可选禁用/启用/优先/仅 IPv6 模式
 - 🔄 **备用节点**：支持配置备用订阅源，主节点不可用时可快速切换
 - 🚩 **智能国旗**：自动识别节点名称中的国旗 Emoji（如 🇫🇮），优雅展示
+- 🔔 **VPN 通知**：实时显示上传/下载速度、累计流量，支持断开/重置连接
+- ⏳ **节流保护**：刷新、切换备用节点、检查更新等操作 5 秒内防重复触发
 - 🔔 **公告系统**：支持远程推送公告通知
 - 📦 **稳健更新**：
   - 应用内下载，支持断点续传
@@ -428,6 +428,47 @@ static const char* EXPECTED_SIGNATURE = "95CAC58A...";
 
 ---
 
+### 5. Release 日志屏蔽
+
+Release 版本默认移除所有 `android.util.Log` 调用（包括 `Log.d`、`Log.i`、`Log.w`、`Log.e`），通过 R8/ProGuard 在编译时优化。
+
+**优点**：
+- 减少 APK 体积
+- 防止日志泄露敏感信息
+- 提升运行性能
+
+**配置位置**：`app/proguard-rules.pro`
+
+```proguard
+# 移除所有日志调用
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int i(...);
+    public static int v(...);
+    public static int w(...);
+    public static int e(...);
+}
+```
+
+#### 如何保留部分日志
+
+如果需要在 Release 版本中保留部分日志（如用于崩溃分析），可以注释掉对应级别：
+
+```proguard
+# 保留 Warning 和 Error 级别日志
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int i(...);
+    public static int v(...);
+    # public static int w(...);  # 保留
+    # public static int e(...);  # 保留
+}
+```
+
+修改后需重新 Build Release 版本。
+
+---
+
 ## API 接口
 
 ### 1. 节点订阅接口
@@ -442,7 +483,10 @@ static const char* EXPECTED_SIGNATURE = "95CAC58A...";
 - `trojan://` - Trojan
 - `hysteria2://` 或 `hy2://` - Hysteria2
 - `ss://` - Shadowsocks
-- `socks://` - SOCKS5
+- `socks://` 或 `socks5://` - SOCKS5
+- `socks4://` - SOCKS4
+- `http://` - HTTP 代理
+- `https://` - HTTPS 代理 (自动启用 TLS)
 
 **示例响应** (Base64 解码后):
 ```

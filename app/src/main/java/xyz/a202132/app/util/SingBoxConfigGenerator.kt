@@ -292,6 +292,7 @@ class SingBoxConfigGenerator {
             NodeType.HYSTERIA2 -> createHysteria2Outbound(node)
             NodeType.SHADOWSOCKS -> createShadowsocksOutbound(node)
             NodeType.SOCKS -> createSocksOutbound(node)
+            NodeType.HTTP -> createHttpOutbound(node)
             else -> createVlessOutbound(node)
         }
         // 覆盖 tag
@@ -449,15 +450,46 @@ class SingBoxConfigGenerator {
         val parts = userInfo.split(":")
         val username = parts.getOrNull(0) ?: ""
         val password = parts.getOrNull(1) ?: ""
+        
+        // 检测 SOCKS 版本 (socks4:// -> 4, socks5:// 或 socks:// -> 5)
+        val version = when {
+            node.rawLink.startsWith("socks4://") -> "4"
+            else -> "5"
+        }
 
         return JsonObject().apply {
             addProperty("type", "socks")
             addProperty("server", node.server)
             addProperty("server_port", node.port)
-            addProperty("version", "5")
+            addProperty("version", version)
             if (username.isNotEmpty()) {
                 addProperty("username", username)
                 addProperty("password", password)
+            }
+        }
+    }
+    
+    private fun createHttpOutbound(node: Node): JsonObject {
+        val uri = Uri.parse(node.rawLink)
+        val userInfo = uri.userInfo ?: ""
+        val parts = userInfo.split(":")
+        val username = parts.getOrNull(0) ?: ""
+        val password = parts.getOrNull(1) ?: ""
+        val useTls = node.rawLink.startsWith("https://")
+
+        return JsonObject().apply {
+            addProperty("type", "http")
+            addProperty("server", node.server)
+            addProperty("server_port", node.port)
+            if (username.isNotEmpty()) {
+                addProperty("username", username)
+                addProperty("password", password)
+            }
+            if (useTls) {
+                add("tls", JsonObject().apply {
+                    addProperty("enabled", true)
+                    addProperty("server_name", node.server)
+                })
             }
         }
     }

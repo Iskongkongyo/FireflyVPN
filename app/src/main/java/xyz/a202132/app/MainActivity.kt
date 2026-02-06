@@ -1,7 +1,10 @@
 package xyz.a202132.app
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -15,6 +18,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.service.ServiceManager
@@ -40,8 +45,21 @@ class MainActivity : ComponentActivity() {
         pendingVpnAction = null
     }
     
+    // 通知权限请求 (Android 13+)
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            // 权限已授予
+        }
+        // 不管是否授予，都继续运行应用
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 请求通知权限 (Android 13+)
+        requestNotificationPermission()
         
         setContent {
             FireflyVPNTheme {
@@ -88,6 +106,19 @@ class MainActivity : ComponentActivity() {
         } else {
             // 已有权限，直接执行
             action()
+        }
+    }
+    
+    private fun requestNotificationPermission() {
+        // Android 13 (API 33) 及以上需要请求通知权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
     
