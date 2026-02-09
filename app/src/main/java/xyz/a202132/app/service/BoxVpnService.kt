@@ -238,6 +238,12 @@ class BoxVpnService : VpnService() {
             try {
                 delay(1000) // 等待服务启动
                 
+                // 检查服务是否仍在运行，避免在 VPN 已停止后尝试连接
+                if (!isRunning) {
+                    Log.d(TAG, "Command client skipped: VPN already stopped")
+                    return@launch
+                }
+                
                 val options = io.nekohasekai.libbox.CommandClientOptions().apply {
                     command = Libbox.CommandGroup // 监听组变化（延迟测试结果）
                     statusInterval = 10_000_000_000L // 10秒 (对于组状态不需要太频繁)
@@ -296,12 +302,21 @@ class BoxVpnService : VpnService() {
                     override fun writeConnections(message: io.nekohasekai.libbox.Connections?) {}
                 }
                 
+                // 再次检查，因为创建 handler 可能有些耗时
+                if (!isRunning) {
+                    Log.d(TAG, "Command client skipped: VPN stopped during setup")
+                    return@launch
+                }
+                
                 commandClient = io.nekohasekai.libbox.CommandClient(handler, options)
                 commandClient?.connect()
                 Log.d(TAG, "Command client started")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Error starting command client", e)
+                // 只在服务仍在运行时记录错误，否则静默忽略
+                if (isRunning) {
+                    Log.e(TAG, "Error starting command client", e)
+                }
             }
         }
     }
@@ -447,13 +462,31 @@ class BoxVpnService : VpnService() {
     }
     
     private fun stopVpn() {
-        Log.d(TAG, "Stopping VPN")
-        
+        val stopStartTime = System.currentTimeMillis()
+        Log.d(TAG, "Stopping VPN - start")
+
+        // 立即关闭 TUN，确保状态栏 VPN 图标尽快消失
+        try {
+            platformInterface?.closeTun()
+            Log.d(TAG, "TUN closed in ${System.currentTimeMillis() - stopStartTime}ms")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing TUN immediately", e)
+        }
+
+        // 立即停止前台服务（在主线程同步执行，不等待协程）
+        // 这可能有助于加快 VPN 图标消失，因为系统可以更早地开始清理
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            Log.d(TAG, "Foreground stopped in ${System.currentTimeMillis() - stopStartTime}ms")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping foreground", e)
+        }
+
         serviceScope.launch {
             stopVpnInternal()
             
             withContext(Dispatchers.Main) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                Log.d(TAG, "Calling stopSelf after ${System.currentTimeMillis() - stopStartTime}ms")
                 stopSelf()
             }
         }
@@ -465,6 +498,13 @@ class BoxVpnService : VpnService() {
         serviceScope.launch {
             // 保存当前配置
             val savedNodeName = currentNodeName
+
+            // 立即关闭 TUN，确保状态栏 VPN 图标尽快消失
+            try {
+                platformInterface?.closeTun()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing TUN immediately", e)
+            }
             
             // 停止当前连接
             stopVpnInternal()

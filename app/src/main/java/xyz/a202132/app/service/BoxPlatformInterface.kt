@@ -251,14 +251,17 @@ class BoxPlatformInterface(
             builder.addRoute("::", 0)
         }
         
-        // 分应用代理
-        applyPerAppProxy(builder)
+        // 分应用代理 - 返回是否使用了白名单模式
+        val usedWhitelistMode = applyPerAppProxy(builder)
         
-        // 排除自身应用
-        try {
-            builder.addDisallowedApplication(service.packageName)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to disallow self package", e)
+        // 排除自身应用（仅在非白名单模式时）
+        // Android 限制：addAllowedApplication 和 addDisallowedApplication 不能混用
+        if (!usedWhitelistMode) {
+            try {
+                builder.addDisallowedApplication(service.packageName)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to disallow self package", e)
+            }
         }
         
         tunFd = builder.establish()
@@ -270,8 +273,9 @@ class BoxPlatformInterface(
     
     /**
      * 应用分应用代理规则
+     * @return 是否使用了白名单模式（addAllowedApplication）
      */
-    private fun applyPerAppProxy(builder: android.net.VpnService.Builder) {
+    private fun applyPerAppProxy(builder: android.net.VpnService.Builder): Boolean {
         val settingsRepo = xyz.a202132.app.data.repository.SettingsRepository(service)
         
         // 使用 runBlocking 读取设置（在 openTun 调用时需要同步获取）
@@ -281,7 +285,7 @@ class BoxPlatformInterface(
         
         if (!isPerAppEnabled) {
             Log.d(TAG, "Per-app proxy disabled, all apps will use VPN")
-            return
+            return false
         }
         
         val mode = kotlinx.coroutines.runBlocking { 
@@ -307,6 +311,7 @@ class BoxPlatformInterface(
                         Log.w(TAG, "Failed to allow app: $pkg", e)
                     }
                 }
+                return true // 使用了白名单模式
             }
             xyz.a202132.app.data.model.PerAppProxyMode.BLACKLIST -> {
                 // 绕过模式：排除选中的应用
@@ -318,8 +323,10 @@ class BoxPlatformInterface(
                         Log.w(TAG, "Failed to disallow app: $pkg", e)
                     }
                 }
+                return false // 未使用白名单模式
             }
         }
+        return false
     }
     
     override fun useProcFS(): Boolean {
@@ -493,10 +500,13 @@ class BoxPlatformInterface(
     }
     
     fun closeTun() {
+        val startTime = System.currentTimeMillis()
+        val hadFd = tunFd != null
         try {
             tunFd?.close()
             tunFd = null
-            Log.d(TAG, "TUN interface closed")
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.d(TAG, "TUN interface closed (hadFd=$hadFd, took ${elapsed}ms)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to close TUN", e)
         }

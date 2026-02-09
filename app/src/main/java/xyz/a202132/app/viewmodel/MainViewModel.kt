@@ -80,7 +80,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             emptyList()
         )
     
-    val selectedNodeId = settingsRepository.selectedNodeId.stateIn(
+    // 初始化完成标志 - 用于防止 UI 闪烁
+    private val _isInitialized = MutableStateFlow(false)
+    
+    val selectedNodeId = combine(
+        settingsRepository.selectedNodeId,
+        _isInitialized
+    ) { nodeId, initialized ->
+        // 只有在初始化完成后才发出真实值，否则返回 null
+        if (initialized) nodeId else null
+    }.stateIn(
         viewModelScope,
         SharingStarted.Lazily,
         null
@@ -127,6 +136,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             // 每次启动重置选择状态 (不记住上次选择)
             settingsRepository.setSelectedNodeId(null)
+            
+            // 标记初始化完成，此时 selectedNodeId 才开始发出真实值
+            // 这样 UI 不会看到旧的选中状态闪烁
+            _isInitialized.value = true
             
             // 监听用户协议状态，只有同意后才初始化网络请求
             isUserAgreementAccepted.collect { accepted ->

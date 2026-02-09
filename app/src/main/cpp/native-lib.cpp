@@ -11,7 +11,7 @@
  */
 
 // Expected signature SHA-256 hash (uppercase, no colons)
-static const char* EXPECTED_SIGNATURE = "YOUR_RELEASE_SIGNATURE_SHA256_HERE，uppercase, no colons！";
+static const char* EXPECTED_SIGNATURE = "YOUR_RELEASE_SIGNATURE_SHA256_HERE";
 
 /**
  * Verify APK signature against expected hash.
@@ -99,11 +99,10 @@ extern "C" JNIEXPORT void JNICALL Java_xyz_a202132_app_util_SignatureVerifier_ve
  */
 extern "C" JNIEXPORT jstring JNICALL Java_xyz_a202132_app_util_CryptoUtils_getNativeKey(JNIEnv* env, jobject /* this */) {
 
-    // 混淆算法：加密字节 = 原始字符 ^ (SEED + 索引)
-    const int SEED = 0x33; 
-    
-    // AES密钥示例: "MySecretKey12345" (16 bytes)
-   unsigned char encrypted_key[] = {
+ // AES密钥示例: "MySecretKey12345" (16 bytes)
+// 混淆算法：加密字节 = 原始字符 ^ (SEED + 索引)
+const int SEED = 0x33;
+unsigned char encrypted_key[] = {
     0x7E, 0x7D, 0x20, 0x5E, 0x5A, 0x60, 0x5A, 0x40,
     0x2A, 0x38, 0x0E, 0x45, 0x00, 0x08, 0x09, 0x03,
     0x00
