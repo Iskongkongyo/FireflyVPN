@@ -612,6 +612,132 @@ text = "流萤加速器"; 替换成你的应用名称
 
 ---
 
+### 修改 VPN 连接按钮
+
+当前连接按钮使用三张自定义图片表示不同状态：
+
+| 图片文件 | 状态 | 说明 |
+|---------|------|------|
+| `btn_disconnected.png` | 未连接 | 默认待机状态 |
+| `btn_connecting.png` | 连接中/断开中 | 带脉冲动画 |
+| `btn_connected.png` | 已连接 | VPN 已开启 |
+
+**图片位置**: `app/src/main/res/drawable/`
+
+#### 替换按钮图片
+
+将你的三张图片重命名为上述文件名，替换到 `drawable` 目录即可。
+
+> 💡 推荐使用 **透明背景的 PNG 图片**，尺寸建议 512×512 像素以上以保证清晰度。
+
+#### 恢复经典圆形按钮
+
+如果不想使用自定义图片，可以将 `ConnectButton.kt` 替换为经典的 Material Design 圆形电源按钮：
+
+```kotlin
+package xyz.a202132.app.ui.components
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import xyz.a202132.app.data.model.VpnState
+import xyz.a202132.app.ui.theme.*
+
+@Composable
+fun ConnectButton(
+    vpnState: VpnState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    customLabel: String? = null
+) {
+    val isConnecting = vpnState == VpnState.CONNECTING || vpnState == VpnState.DISCONNECTING
+    val buttonColor by animateColorAsState(
+        targetValue = when (vpnState) {
+            VpnState.CONNECTED -> ConnectedGreen
+            VpnState.CONNECTING, VpnState.DISCONNECTING -> ConnectingYellow
+            VpnState.DISCONNECTED -> Primary
+        },
+        animationSpec = tween(300), label = "buttonColor"
+    )
+    val glowColor by animateColorAsState(
+        targetValue = when (vpnState) {
+            VpnState.CONNECTED -> ConnectedGreenGlow.copy(alpha = 0.3f)
+            VpnState.CONNECTING, VpnState.DISCONNECTING -> ConnectingYellow.copy(alpha = 0.3f)
+            VpnState.DISCONNECTED -> Primary.copy(alpha = 0.2f)
+        },
+        animationSpec = tween(300), label = "glowColor"
+    )
+    val infiniteTransition = rememberInfiniteTransition(label = "loading")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f, targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ), label = "pulse"
+    )
+    val scale = if (isConnecting) pulseScale else 1f
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size((140 * scale).dp)
+                .shadow(20.dp, CircleShape, ambientColor = glowColor, spotColor = glowColor)
+                .background(Brush.radialGradient(listOf(glowColor, Color.Transparent)), CircleShape)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(120.dp)
+                    .clip(CircleShape)
+                    .background(Brush.verticalGradient(listOf(buttonColor, buttonColor.copy(alpha = 0.8f))))
+                    .clickable(enabled = !isConnecting) { onClick() }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PowerSettingsNew,
+                    contentDescription = "Connect",
+                    tint = Color.White,
+                    modifier = Modifier.size(56.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = customLabel ?: when (vpnState) {
+                VpnState.CONNECTED -> "已连接"
+                VpnState.CONNECTING -> "连接中..."
+                VpnState.DISCONNECTING -> "断开中..."
+                VpnState.DISCONNECTED -> "点击连接"
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 14.sp, fontWeight = FontWeight.Medium
+        )
+    }
+}
+```
+
+替换后可删除 `drawable` 目录中的 `btn_disconnected.png`、`btn_connecting.png`、`btn_connected.png`。
+
+---
+
 ### 修改应用图标
 
 **图标文件位置**:
