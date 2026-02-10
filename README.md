@@ -763,7 +763,7 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 
 ## 常见问题
 
-### Q: 启动时报 `unknown field "rule_set"` 错误
+### Q: **编写rule_set相关功能代码时运行报错 "unknown field rule_set" 怎么办？**
 **A**: 当前 libbox 版本不支持 `rule_set` 特性。项目已使用硬编码的 `domain_suffix` 规则代替，请确保使用最新代码。
 
 ### Q: 节点无法连接 / NAME_NOT_RESOLVED
@@ -771,6 +771,7 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 
 ### Q: 如何添加新的代理协议？
 **A**:
+
 1. 在 `NodeType.kt` 添加新枚举值
 2. 在 `SubscriptionParser.kt` 添加解析逻辑
 3. 在 `SingBoxConfigGenerator.kt` 添加 outbound 生成逻辑
