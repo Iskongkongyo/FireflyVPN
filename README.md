@@ -142,8 +142,8 @@ private val retrofit = Retrofit.Builder()
 
 同时修改 `app/src/main/res/xml/network_security_config.xml` ：
 
-```kotlin
- <domain includeSubdomains="true">example.com</domain>// 修改为你的域名
+```xml
+<domain includeSubdomains="true">example.com</domain> <!-- 修改为你的域名 -->
 ```
 
 ### 4. 构建运行
@@ -163,35 +163,56 @@ private val retrofit = Retrofit.Builder()
 
 ```
 app/src/main/java/xyz/a202132/app/
-├── AppConfig.kt           # 全局配置常量（API地址等）
-├── MainActivity.kt        # 主 Activity
-├── VpnApplication.kt      # Application 类
+├── AppConfig.kt              # 全局配置常量（API地址等）
+├── MainActivity.kt           # 主 Activity
+├── VpnApplication.kt         # Application 类
 ├── data/
-│   ├── model/             # 数据模型
-│   │   ├── ApiModels.kt   # API 响应模型
-│   │   ├── Node.kt        # 节点数据模型
-│   │   ├── NodeType.kt    # 代理协议类型枚举
-│   │   ├── PerAppProxyMode.kt  # 分应用代理模式枚举
-│   │   └── IPv6RoutingMode.kt  # IPv6 路由模式枚举
-│   └── repository/        # 数据仓库
+│   ├── local/                # 本地数据库
+│   │   ├── AppDatabase.kt    # Room 数据库定义
+│   │   └── NodeDao.kt        # 节点数据访问对象
+│   ├── model/                # 数据模型
+│   │   ├── ApiModels.kt      # API 响应模型
+│   │   ├── Node.kt           # 节点数据模型
+│   │   ├── NodeType.kt       # 代理协议类型枚举
+│   │   ├── PerAppProxyMode.kt     # 分应用代理模式枚举
+│   │   └── IPv6RoutingMode.kt     # IPv6 路由模式枚举
+│   └── repository/           # 数据仓库
 │       └── SettingsRepository.kt  # 设置存储（包含分应用代理、绕过局域网等）
 ├── network/
-│   ├── ApiService.kt      # Retrofit API 接口定义
-│   ├── NetworkClient.kt   # 网络客户端配置
-│   ├── LatencyTester.kt   # 节点延迟测试
-│   └── SubscriptionParser.kt  # 订阅链接解析器
+│   ├── ApiService.kt         # Retrofit API 接口定义
+│   ├── DownloadManager.kt    # 应用内下载管理器（断点续传）
+│   ├── LatencyTester.kt      # 节点延迟测试
+│   ├── NetworkClient.kt      # 网络客户端配置
+│   └── SubscriptionParser.kt # 订阅链接解析器
 ├── service/
-│   ├── BoxVpnService.kt   # VPN 服务（sing-box 核心）
-│   └── ServiceManager.kt  # VPN 服务管理器
+│   ├── BoxPlatformInterface.kt  # sing-box 平台接口（TUN 管理、分应用代理）
+│   ├── BoxVpnService.kt      # VPN 服务（sing-box 核心）
+│   └── ServiceManager.kt     # VPN 服务管理器
 ├── ui/
-│   ├── components/        # 可复用 UI 组件
-│   └── screens/
-│       ├── MainScreen.kt  # 主界面
-│       └── PerAppProxyScreen.kt  # 分应用代理设置界面
+│   ├── components/           # 可复用 UI 组件
+│   │   ├── ConnectButton.kt  # 连接按钮
+│   │   ├── DrawerContent.kt  # 侧边栏内容
+│   │   ├── NodeListDialog.kt # 节点列表弹窗
+│   │   ├── NodeSelector.kt   # 节点选择器
+│   │   └── TrafficStatsRow.kt # 流量统计展示
+│   ├── dialogs/              # 对话框
+│   │   ├── Dialogs.kt        # 通用对话框（公告、更新等）
+│   │   └── UserAgreementDialog.kt  # 用户协议弹窗
+│   ├── screens/              # 页面
+│   │   ├── MainScreen.kt     # 主界面
+│   │   └── PerAppProxyScreen.kt  # 分应用代理设置界面
+│   └── theme/                # 主题配置
+│       ├── Color.kt          # 颜色定义
+│       ├── Theme.kt          # 主题配置
+│       └── Type.kt           # 字体排版
 ├── util/
+│   ├── CryptoUtils.kt        # AES 加解密工具
+│   ├── NetworkUtils.kt       # 网络状态检测工具
+│   ├── RuleManager.kt        # 智能分流规则管理
+│   ├── SignatureVerifier.kt  # APK 签名验证（JNI 桥接）
 │   └── SingBoxConfigGenerator.kt  # sing-box 配置生成器
 └── viewmodel/
-    ├── MainViewModel.kt   # 主界面 ViewModel
+    ├── MainViewModel.kt      # 主界面 ViewModel
     └── PerAppProxyViewModel.kt  # 分应用代理 ViewModel
 ```
 
@@ -290,10 +311,12 @@ IPv6 路由功能允许用户控制 VPN 对 IPv6 网络的处理方式。
 **配置位置**：`app/build.gradle.kts`
 
 ```kotlin
-stringfog {
-    implementation = "com.niceyun.StringFogImpl"
+configure<com.github.megatronking.stringfog.plugin.StringFogExtension> {
+    implementation = "com.github.megatronking.stringfog.xor.StringFogImpl"
     enable = true
-    mode = StringFogMode.base64
+    fogPackages = arrayOf("xyz.a202132.app") // 只加密我们自己的代码
+    kg = com.github.megatronking.stringfog.plugin.kg.RandomKeyGenerator()
+    mode = com.github.megatronking.stringfog.plugin.StringFogMode.base64
 }
 ```
 
@@ -684,13 +707,15 @@ add("domain_suffix", JsonArray().apply {
 
 ### Debug 构建
 
-Debug 模式可直接构建，无需额外配置签名：
+Debug 模式已配置使用 Release 签名（防止 Native 签名验证失败）：
 
 ```bash
 ./gradlew assembleDebug
 ```
 
 输出: `app/build/outputs/apk/debug/app-debug.apk`
+
+> ⚠️ **注意**: 由于 Native 层有签名校验，Debug 和 Release 构建均需使用相同的签名密钥。`build.gradle.kts` 中已配置 `debug { signingConfig = signingConfigs.getByName("release") }`。
 
 ### Release 构建
 
@@ -723,6 +748,16 @@ storePassword=你的StorePassword
 4. 选择 **release** -> **Create**
 
 输出: `app/build/outputs/apk/release/app-release.apk`
+
+### 16 KB 页面对齐
+
+自 2025 年 11 月起，Google Play 要求所有面向 Android 15+ 的应用支持 16 KB 页面大小。项目已在 `CMakeLists.txt` 中配置对齐：
+
+```cmake
+target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
+```
+
+> 💡 如果使用第三方 `.so` 库（如 `libbox.so`），也需确保其支持 16 KB 对齐，否则需更新上游库版本。
 
 ---
 

@@ -30,6 +30,9 @@ find_library( # Sets the name of the path variable.
               # Specifies the name of the NDK library that you want CMake to locate.
               log )
 
+# 16 KB page size alignment (required for Android 15+ / Google Play)
+target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
+
 # Specifies libraries CMake should link to your target library. You can link multiple libraries, such as libraries you define in this build script, prebuilt third-party libraries, or system libraries.
 
 target_link_libraries( # Specifies the target library.
