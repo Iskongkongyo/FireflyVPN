@@ -10,14 +10,14 @@ plugins {
 
 android {
     namespace = "xyz.a202132.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "xyz.a202132.app"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 8
-        versionName = "1.7.0"
+        targetSdk = 35
+        versionCode = 11
+        versionName = "1.10.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

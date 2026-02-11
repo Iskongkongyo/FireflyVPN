@@ -1,0 +1,97 @@
+name: Sync Release APK to Cloudflare R2
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      APK_NAME: FireflyVPN.apk
+
+      # 可选：你对外公开的下载域名（自定义域名或 r2.dev）
+      R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+
+    steps:
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Install awscli
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install awscli
+
+      - name: Download APK asset from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${{ github.event.release.tag_name }}"
+          echo "Release tag: $TAG"
+
+          # 找到名为 FireflyVPN.apk 的 asset 并下载
+          ASSET_URL=$(gh api repos/${{ github.repository }}/releases/tags/$TAG \
+            --jq '.assets[] | select(.name=="'"$APK_NAME"'") | .url')
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "ERROR: Asset $APK_NAME not found in release $TAG"
+            echo "Available assets:"
+            gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.assets[].name'
+            exit 1
+          fi
+
+          # 用 GitHub API 下载 asset（二进制）
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "$ASSET_URL" \
+            -o "$APK_NAME"
+
+          ls -lh "$APK_NAME"
+
+      - name: Generate SHA256
+        run: |
+          sha256sum "$APK_NAME" | tee "${APK_NAME}.sha256"
+
+      - name: Upload to R2 (versioned + latest)
+        run: |
+          set -e
+          TAG="${{ github.event.release.tag_name }}"
+
+          # 1) 版本目录：/v1.10.0/FireflyVPN.apk
+          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}.sha256" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          # 2) 最新目录：/latest/FireflyVPN.apk
+          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/latest/${APK_NAME}" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/latest/${APK_NAME}.sha256" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+      - name: Print public URLs (if configured)
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -n "${R2_PUBLIC_BASE}" ]; then
+            echo "Versioned APK: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}"
+            echo "Versioned SHA: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}.sha256"
+            echo "Latest APK:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}"
+            echo "Latest SHA:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}.sha256"
+          else
+            echo "R2_PUBLIC_BASE not set. Set it to your custom domain or r2.dev base URL to print download links."
+          fi

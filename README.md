@@ -81,7 +81,7 @@
 | 要求 | 说明 |
 |------|------|
 | **Android 版本** | Android 7.0 (API 24) 及以上 |
-| **目标版本** | Android 14 (API 34) |
+| **目标版本** | Android 15 (API 35) |
 
 ### 核心依赖
 
@@ -906,7 +906,7 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 
 ## 开源协议
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目基于 [GNU General Public License v3.0](LICENSE) 开源，与核心依赖 sing-box 的协议保持一致。
 
 **依赖项目**:
 - [sing-box](https://github.com/SagerNet/sing-box) - GPLv3
