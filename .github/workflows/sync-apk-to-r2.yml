@@ -2,7 +2,8 @@ name: Sync Release APK to Cloudflare R2
 
 on:
   release:
-    types: [published,edited,workflow_dispatch]
+    types: [published, edited, released, prereleased]
+  workflow_dispatch:
 
 permissions:
   contents: read
