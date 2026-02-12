@@ -35,7 +35,8 @@ data class DownloadState(
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
     val error: String? = null,
-    val file: File? = null
+    val file: File? = null,
+    val consecutiveFailures: Int = 0      // 连续失败次数（不含无网络）
 )
 
 object DownloadManager {
@@ -52,6 +53,9 @@ object DownloadManager {
     // Control flags
     private var isPaused = false
     private var isCancelled = false
+    
+    // 连续失败计数器（排除无网络错误）
+    private var consecutiveFailures = 0
     
     /**
      * Start or Resume download
@@ -198,6 +202,7 @@ object DownloadManager {
                     
                     // Download Complete - Rename to final
                     if (targetFile!!.renameTo(finalFile)) {
+                         consecutiveFailures = 0 // 下载成功，重置失败计数
                          _downloadState.value = DownloadState(
                             status = DownloadStatus.COMPLETED,
                             progress = 100,
@@ -219,9 +224,24 @@ object DownloadManager {
             } catch (e: Exception) {
                 if (!isCancelled && !isPaused) {
                     Log.e(TAG, "Download error", e)
+                    
+                    // 判断是否为网络不可用错误
+                    val isNetworkError = e is java.net.UnknownHostException ||
+                            e is java.net.ConnectException ||
+                            e is java.net.NoRouteToHostException ||
+                            e is java.net.SocketTimeoutException ||
+                            (e.message?.contains("Unable to resolve host", ignoreCase = true) == true) ||
+                            (e.message?.contains("No address associated", ignoreCase = true) == true)
+                    
+                    // 非网络错误才计入连续失败次数
+                    if (!isNetworkError) {
+                        consecutiveFailures++
+                    }
+                    
                     _downloadState.value = _downloadState.value.copy(
                         status = DownloadStatus.ERROR,
-                        error = e.message
+                        error = e.message,
+                        consecutiveFailures = consecutiveFailures
                     )
                 }
             }
@@ -238,6 +258,7 @@ object DownloadManager {
         isCancelled = true
         // Delete temp file if it exists
         targetFile?.delete() 
+        consecutiveFailures = 0 // 取消时重置失败计数
         _downloadState.value = DownloadState(status = DownloadStatus.CANCELED)
         downloadUrl = "" // Reset url to force fresh start next time
     }
@@ -248,6 +269,7 @@ object DownloadManager {
         targetFile = null
         isPaused = false
         isCancelled = false
+        consecutiveFailures = 0
     }
     
     // Check if valid APK exists

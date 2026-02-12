@@ -1,0 +1,150 @@
+name: Sync Release APK to Cloudflare R2
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.10.0). Required when manually running."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# 同一个 tag 短时间内触发多次（published/edited/重新发布等），只保留最后一次
+concurrency:
+  group: r2-sync-${{ github.repository }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      APK_NAME: FireflyVPN.apk
+
+      # 你的公开下载域名
+      R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+
+    steps:
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Install awscli
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install awscli
+
+      - name: Ensure gh exists
+        run: |
+          set -e
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+          else
+            sudo apt-get update
+            sudo apt-get install -y gh
+            gh --version
+          fi
+
+      - name: Download APK asset from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "Release tag: $TAG"
+
+          if [ -z "$TAG" ]; then
+            echo "ERROR: TAG is empty. If you ran workflow manually, please provide inputs.tag."
+            exit 1
+          fi
+
+          # 找到名为 FireflyVPN.apk 的 asset 并下载
+          ASSET_URL=$(gh api repos/${{ github.repository }}/releases/tags/$TAG \
+            --jq '.assets[] | select(.name=="'"$APK_NAME"'") | .url')
+
+          if [ -z "${ASSET_URL:-}" ]; then
+            echo "ERROR: Asset $APK_NAME not found in release $TAG"
+            echo "Available assets:"
+            gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.assets[].name'
+            exit 1
+          fi
+
+          # 用 GitHub API 下载 asset（二进制）
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "$ASSET_URL" \
+            -o "$APK_NAME"
+
+          ls -lh "$APK_NAME"
+
+      - name: Generate SHA256
+        run: |
+          set -euo pipefail
+          sha256sum "$APK_NAME" | tee "${APK_NAME}.sha256"
+
+      # 真正去重：如果 R2 上 latest 的 sha256 一样，就直接跳过上传
+      - name: Skip upload if same as current latest on R2
+        run: |
+          set -euo pipefail
+          LOCAL_SHA=$(cut -d' ' -f1 "${APK_NAME}.sha256" || true)
+          echo "Local sha256: $LOCAL_SHA"
+
+          if [ -n "${R2_PUBLIC_BASE:-}" ]; then
+            REMOTE_URL="${R2_PUBLIC_BASE}/latest/${APK_NAME}.sha256"
+            echo "Fetch remote sha256: $REMOTE_URL"
+
+            REMOTE_SHA=$(curl -fsSL "$REMOTE_URL" | cut -d' ' -f1 || true)
+            echo "Remote sha256: ${REMOTE_SHA:-<empty>}"
+
+            if [ -n "${REMOTE_SHA:-}" ] && [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
+              echo "Same APK already on R2 (latest). Skip upload."
+              exit 0
+            fi
+          else
+            echo "R2_PUBLIC_BASE not set; cannot compare. Continue upload."
+          fi
+
+      - name: Upload to R2 (versioned + latest)
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "Upload tag: $TAG"
+
+          # 1) 版本目录：/<tag>/FireflyVPN.apk
+          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}.sha256" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          # 2) 最新目录：/latest/FireflyVPN.apk
+          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/latest/${APK_NAME}" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/latest/${APK_NAME}.sha256" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+      - name: Print public URLs
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -n "${R2_PUBLIC_BASE:-}" ]; then
+            echo "Versioned APK: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}"
+            echo "Versioned SHA: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}.sha256"
+            echo "Latest APK:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}"
+            echo "Latest SHA:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}.sha256"
+          else
+            echo "R2_PUBLIC_BASE not set. Set it to your custom domain base URL, e.g. "
+          fi

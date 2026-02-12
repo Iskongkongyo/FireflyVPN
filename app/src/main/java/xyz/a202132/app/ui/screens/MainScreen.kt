@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import xyz.a202132.app.data.model.ProxyMode
@@ -338,6 +339,79 @@ fun MainScreen(
             onCancel = { viewModel.cancelDownload() },
             onRetry = { viewModel.retryDownload() }
         )
+    }
+    
+    // 连续下载失败后提示从官网下载
+    var showWebsiteFallback by remember { mutableStateOf(false) }
+    val websiteUrl = xyz.a202132.app.AppConfig.WEBSITE_URL
+    
+    LaunchedEffect(downloadState.consecutiveFailures) {
+        if (downloadState.consecutiveFailures >= 3 && websiteUrl.isNotBlank()) {
+            showWebsiteFallback = true
+        }
+    }
+    
+    if (showWebsiteFallback) {
+        Dialog(onDismissRequest = { showWebsiteFallback = false }) {
+            Surface(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "下载失败",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    Text(
+                        text = "APP已连续 ${downloadState.consecutiveFailures} 次下载失败，是否选择从官网下载？",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        lineHeight = 22.sp
+                    )
+                    
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showWebsiteFallback = false },
+                            modifier = Modifier.weight(1f),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ) {
+                            Text("继续重试")
+                        }
+                        
+                        Button(
+                            onClick = {
+                                showWebsiteFallback = false
+                                viewModel.cancelDownload()
+                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(websiteUrl))
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                        ) {
+                            Text("去官网")
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // 用户协议弹窗 (仅在未同意时显示)
