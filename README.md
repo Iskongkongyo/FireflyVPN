@@ -21,6 +21,12 @@
 
 ---
 
+**免责声明：** 本项目为我开源作品，与米哈游 (HoYoverse) 无关。本项目不盈利、不接受捐赠。所有涉及的游戏角色名称及设计版权归米哈游所有。
+
+**Disclaimers:** This project is my open-source creation and is related to miHoYo (HoYoverse). This project is non-profit and not for sale. All game character names and design copyrights belong to miHoYo.
+
+------
+
 ## 界面展示
 
 ---
