@@ -9,7 +9,6 @@ import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import io.nekohasekai.libbox.BoxService
 import io.nekohasekai.libbox.Libbox
 import kotlinx.coroutines.*
 import xyz.a202132.app.AppConfig
@@ -17,6 +16,7 @@ import xyz.a202132.app.MainActivity
 import xyz.a202132.app.R
 import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.util.SingBoxConfigGenerator
+// RuleSetManager removed
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.flow.first
@@ -60,7 +60,7 @@ class BoxVpnService : VpnService() {
         }
     }
     
-    private var boxService: BoxService? = null
+    private var commandServer: io.nekohasekai.libbox.CommandServer? = null
     private var platformInterface: BoxPlatformInterface? = null
     private val configGenerator = SingBoxConfigGenerator()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -187,7 +187,7 @@ class BoxVpnService : VpnService() {
                     workDir.mkdirs()
                 }
                 
-                // libbox 1.12.x 使用 SetupOptions
+                // libbox 1.13.x 使用 SetupOptions
                 val options = io.nekohasekai.libbox.SetupOptions().apply {
                     basePath = workDir.absolutePath
                     workingPath = workDir.absolutePath
@@ -204,9 +204,32 @@ class BoxVpnService : VpnService() {
                 platformInterface = BoxPlatformInterface(this@BoxVpnService)
                 platformInterface?.startNetworkMonitor()
                 
-                // 创建并启动 BoxService - 传递配置内容
-                boxService = Libbox.newService(configContent, platformInterface)
-                boxService?.start()
+                // 创建 CommandServerHandler
+                val serverHandler = object : io.nekohasekai.libbox.CommandServerHandler {
+                    override fun serviceStop() {
+                        stopVpn()
+                    }
+                    override fun serviceReload() {
+                        restartVpn()
+                    }
+                    override fun getSystemProxyStatus(): io.nekohasekai.libbox.SystemProxyStatus {
+                        return io.nekohasekai.libbox.SystemProxyStatus()
+                    }
+                    override fun setSystemProxyEnabled(enabled: Boolean) {
+                        // Android 不支持系统代理设置
+                    }
+                    override fun writeDebugMessage(message: String?) {
+                        Log.d(TAG, "Debug: $message")
+                    }
+                }
+                
+                // 创建 CommandServer（替代旧版 BoxService）
+                commandServer = Libbox.newCommandServer(serverHandler, platformInterface)
+                commandServer?.start()
+                
+                // 启动或重载 sing-box 服务实例
+                val overrideOptions = io.nekohasekai.libbox.OverrideOptions()
+                commandServer?.startOrReloadService(configContent, overrideOptions)
                 
                 // 启动流量监控和组状态监控
                 startCommandClient()
@@ -245,7 +268,7 @@ class BoxVpnService : VpnService() {
                 }
                 
                 val options = io.nekohasekai.libbox.CommandClientOptions().apply {
-                    command = Libbox.CommandGroup // 监听组变化（延迟测试结果）
+                    addCommand(Libbox.CommandGroup) // 监听组变化（延迟测试结果）
                     statusInterval = 10_000_000_000L // 10秒 (对于组状态不需要太频繁)
                 }
                 
@@ -256,7 +279,7 @@ class BoxVpnService : VpnService() {
                     override fun disconnected(message: String?) {
                         Log.d(TAG, "Command client disconnected: $message")
                     }
-                    override fun writeStatus(message: io.nekohasekai.libbox.StatusMessage) {}
+                    override fun writeStatus(message: io.nekohasekai.libbox.StatusMessage?) {}
                     
                     override fun writeGroups(message: io.nekohasekai.libbox.OutboundGroupIterator?) {
                         if (message == null) return
@@ -296,10 +319,11 @@ class BoxVpnService : VpnService() {
                     }
                     
                     override fun clearLogs() {}
-                    override fun writeLogs(messageList: io.nekohasekai.libbox.StringIterator?) {}
+                    override fun setDefaultLogLevel(level: Int) {}
+                    override fun writeLogs(messageList: io.nekohasekai.libbox.LogIterator?) {}
                     override fun initializeClashMode(modeList: io.nekohasekai.libbox.StringIterator?, currentMode: String?) {}
                     override fun updateClashMode(newMode: String?) {}
-                    override fun writeConnections(message: io.nekohasekai.libbox.Connections?) {}
+                    override fun writeConnectionEvents(events: io.nekohasekai.libbox.ConnectionEvents?) {}
                 }
                 
                 // 再次检查，因为创建 handler 可能有些耗时
@@ -586,13 +610,18 @@ class BoxVpnService : VpnService() {
             // 2. 停止 Network Monitor
             pi?.stopNetworkMonitor()
             
-            // 3. 停止 BoxService
+            // 3. 停止 CommandServer 和 sing-box 服务
             try {
-                boxService?.close()
+                commandServer?.closeService()
             } catch (e: Exception) {
-                Log.e(TAG, "Error closing boxService", e)
+                Log.e(TAG, "Error closing service", e)
             }
-            boxService = null
+            try {
+                commandServer?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing commandServer", e)
+            }
+            commandServer = null
             
             Log.d(TAG, "Resources cleaned up")
         } catch (e: Exception) {

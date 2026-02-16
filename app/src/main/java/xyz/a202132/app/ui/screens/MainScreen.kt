@@ -5,7 +5,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,6 +23,7 @@ import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.data.model.VpnState
 import xyz.a202132.app.ui.components.*
 import xyz.a202132.app.ui.dialogs.*
+import xyz.a202132.app.ui.dialogs.SpeedTestDialog
 import xyz.a202132.app.ui.theme.*
 import xyz.a202132.app.viewmodel.MainViewModel
 
@@ -44,12 +47,17 @@ fun MainScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val isTesting by viewModel.isTesting.collectAsState()
     val showNodeList by viewModel.showNodeList.collectAsState()
+    val testingLabel by viewModel.testingLabel.collectAsState()
+    val filterUnavailable by viewModel.filterUnavailable.collectAsState()
     val notice by viewModel.notice.collectAsState()
     val noticeConfig by viewModel.noticeConfig.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
     val error by viewModel.error.collectAsState()
     val isAutoSelecting by viewModel.isAutoSelecting.collectAsState()
     val isUserAgreementAccepted by viewModel.isUserAgreementAccepted.collectAsState()
+    
+    // UI States
+    var showSpeedTestDialog by remember { mutableStateOf(false) }
     
     // 流量统计
     val uploadSpeed by viewModel.uploadSpeed.collectAsState()
@@ -119,6 +127,54 @@ fun MainScreen(
                         )
                     },
                     actions = {
+                        // 工具菜单按钮
+                        var showToolsMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(
+                                onClick = { showToolsMenu = true }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "工具",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showToolsMenu,
+                                onDismissRequest = { showToolsMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("⚡ 网速测试") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        showSpeedTestDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("\uD83D\uDD0C TCPing") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        viewModel.showNodeListForTest("tcping")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("\uD83C\uDF10 URL Test") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        viewModel.showNodeListForTest("urltest")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("\uD83E\uDDF9 隐藏超时节点") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        viewModel.cleanUnavailableNodes()
+                                    }
+                                )
+                            }
+                        }
+                        
+                        // 设置按钮
                         IconButton(
                             onClick = { scope.launch { drawerState.open() } }
                         ) {
@@ -246,6 +302,7 @@ fun MainScreen(
             nodes = nodes,
             selectedNodeId = selectedNodeId,
             isTesting = isTesting,
+            testingLabel = testingLabel,
             onNodeSelected = { node -> viewModel.selectNode(node) },
             onRefresh = { viewModel.fetchNodes() },
             onDismiss = { viewModel.hideNodeList() }
@@ -271,6 +328,11 @@ fun MainScreen(
             onUpdate = { viewModel.openDownloadUrl() },
             onDismiss = { viewModel.dismissUpdate() }
         )
+    }
+    
+    // 网速测试弹窗
+    if (showSpeedTestDialog) {
+        SpeedTestDialog(onDismiss = { showSpeedTestDialog = false })
     }
     
     // 加载弹窗

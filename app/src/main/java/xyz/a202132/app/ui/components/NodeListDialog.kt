@@ -33,6 +33,7 @@ fun NodeListDialog(
     nodes: List<Node>,
     selectedNodeId: String?,
     isTesting: Boolean,
+    testingLabel: String? = null,
     onNodeSelected: (Node) -> Unit,
     onRefresh: () -> Unit,
     onDismiss: () -> Unit
@@ -59,12 +60,22 @@ fun NodeListDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "节点列表",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Column {
+                        Text(
+                            text = "节点列表",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        // 测试类型标签
+                        if (testingLabel != null) {
+                            Text(
+                                text = testingLabel,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                     
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -92,7 +103,15 @@ fun NodeListDialog(
                     }
                 }
                 
-                Divider(color = MaterialTheme.colorScheme.outline)
+                // 测试进度条
+                if (isTesting) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Divider(color = MaterialTheme.colorScheme.outline)
+                }
                 
                 // 节点列表
                 if (nodes.isEmpty()) {

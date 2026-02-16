@@ -93,6 +93,85 @@ class SingBoxConfigGenerator {
         return gson.toJson(config)
     }
     
+    /**
+     * 生成用于 URL Test 的轻量配置
+     * 包含所有节点 + ClashAPI (无 TUN，不需要 VPN 权限)
+     */
+    fun generateUrlTestConfig(nodes: List<Node>, clashApiPort: Int = 19090, defaultInterface: String? = null, logFile: String? = null): String {
+        val config = JsonObject().apply {
+            add("log", JsonObject().apply {
+                addProperty("level", "debug")
+                if (logFile != null) {
+                    addProperty("output", logFile)
+                }
+            })
+            
+            // DNS - 必须走 direct 避免通过代理解析代理服务器域名
+            add("dns", JsonObject().apply {
+                add("servers", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("tag", "dns-direct")
+                        addProperty("address", "8.8.8.8")
+                        addProperty("detour", "direct")
+                    })
+                    add(JsonObject().apply {
+                        addProperty("tag", "dns-local")
+                        addProperty("address", "223.5.5.5")
+                        addProperty("detour", "direct")
+                    })
+                })
+            })
+            
+            // Inbound - 仅 HTTP mixed，无 TUN
+            add("inbounds", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "mixed")
+                    addProperty("tag", "mixed-in")
+                    addProperty("listen", "127.0.0.1")
+                    addProperty("listen_port", 17890)
+                })
+            })
+            
+            // Outbounds - 所有节点 + urltest 组
+            add("outbounds", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "urltest")
+                    addProperty("tag", "auto")
+                    val outboundTags = JsonArray()
+                    nodes.forEach { outboundTags.add(it.id) }
+                    add("outbounds", outboundTags)
+                    addProperty("url", "http://cp.cloudflare.com/generate_204")
+                    addProperty("interval", "10m")
+                    addProperty("tolerance", 50)
+                })
+                
+                nodes.forEach { node ->
+                    add(createNodeOutbound(node, node.id))
+                }
+                
+                add(JsonObject().apply {
+                    addProperty("type", "direct")
+                    addProperty("tag", "direct")
+                })
+            })
+            
+            // 路由 - 不设置 auto_detect_interface 和 default_interface
+            // Go 的 net.InterfaceByName 在 Android 上无法工作
+            // 无 VPN 时系统默认路由会自动走物理网络接口
+            add("route", JsonObject().apply {
+                addProperty("final", "auto")
+            })
+            
+            // 实验性 - ClashAPI
+            add("experimental", JsonObject().apply {
+                add("clash_api", JsonObject().apply {
+                    addProperty("external_controller", "127.0.0.1:$clashApiPort")
+                })
+            })
+        }
+        return gson.toJson(config)
+    }
+    
     private fun createLogConfig(): JsonObject {
         return JsonObject().apply {
             addProperty("level", "info")

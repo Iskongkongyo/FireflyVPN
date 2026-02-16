@@ -28,6 +28,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import xyz.a202132.app.data.model.IPv6RoutingMode
+import xyz.a202132.app.ui.dialogs.AboutDialog
+import xyz.a202132.app.ui.dialogs.NetworkToolboxDialog
 import xyz.a202132.app.ui.theme.*
 
 @Composable
@@ -46,6 +48,8 @@ fun DrawerContent(
     val context = LocalContext.current
     var showIPv6Dialog by remember { mutableStateOf(false) }
     var showBackupNodeConfirmDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+    var showNetworkToolboxDialog by remember { mutableStateOf(false) }
     
     // 检查备用节点是否可用
     val backupNodeInfo = notice?.backupNodes
@@ -136,6 +140,13 @@ fun DrawerContent(
                 ).show()
             }
         )
+
+        DrawerMenuItem(
+            icon = Icons.Outlined.Construction,
+            title = "网络工具箱",
+            subtitle = "常用检测工具",
+            onClick = { showNetworkToolboxDialog = true }
+        )
         
         DrawerMenuItem(
             icon = Icons.Outlined.Language,
@@ -147,17 +158,33 @@ fun DrawerContent(
             }
         )
         
+        // 问题反馈 - 支持邮箱复制 + 链接跳转
+        val hasEmail = AppConfig.FEEDBACK_EMAIL.isNotBlank()
+        val hasFeedbackUrl = AppConfig.FEEDBACK_URL.isNotBlank()
+        
         DrawerMenuItem(
             icon = Icons.Outlined.Email,
             title = "问题反馈",
-            subtitle = AppConfig.FEEDBACK_EMAIL,
+            subtitle = if (hasEmail) AppConfig.FEEDBACK_EMAIL else null,
             onClick = {
-                // 复制邮箱到剪贴板
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val clip = ClipData.newPlainText("email", AppConfig.FEEDBACK_EMAIL)
-                clipboard.setPrimaryClip(clip)
-                Toast.makeText(context, "邮箱已复制", Toast.LENGTH_SHORT).show()
+                if (hasEmail) {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText("email", AppConfig.FEEDBACK_EMAIL)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(context, "邮箱已复制", Toast.LENGTH_SHORT).show()
+                }
+                if (hasFeedbackUrl) {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppConfig.FEEDBACK_URL))
+                    context.startActivity(intent)
+                    onClose()
+                }
             }
+        )
+        
+        DrawerMenuItem(
+            icon = Icons.Outlined.Info,
+            title = "关于",
+            onClick = { showAboutDialog = true }
         )
         
         Spacer(modifier = Modifier.weight(1f))
@@ -223,6 +250,16 @@ fun DrawerContent(
                 }
             }
         )
+    }
+    
+    // 关于弹窗
+    if (showAboutDialog) {
+        AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+    
+    // 网络工具箱弹窗
+    if (showNetworkToolboxDialog) {
+        NetworkToolboxDialog(onDismiss = { showNetworkToolboxDialog = false })
     }
 }
 

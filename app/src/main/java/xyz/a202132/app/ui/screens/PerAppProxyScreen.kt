@@ -198,7 +198,7 @@ fun PerAppProxyScreen(
                     
                     // 模式选择
                     Text(
-                        text = "代理模式",
+                        text = "分应用代理模式",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 8.dp)

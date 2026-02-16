@@ -31,11 +31,13 @@
 
 ---
 
-<div style="display:flex;gap:16px;flex-wrap:wrap;max-width:100%;"><img style="width:360px;max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.08);" src="./images/1.jpg" alt="image1"/><img style="width:360px;max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.08);" src="./images/2.jpg" alt="image2"/></div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;max-width:100%;"><img style="width:360px;max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.08);" src="./images/1.jpg" alt="image1"/><img style="width:360px;max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.08);" src="./images/2.jpg" alt="image2"/><img style="width:360px;max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.08);" src="./images/3.jpg" alt="image2"/></div>
 
 ---
 
 ## 功能特性
+
+### 核心功能
 
 - 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、Shadowsocks、SOCKS4/5、HTTP/HTTPS 代理
 - 🧭 **智能分流**：国内流量直连，国外流量代理，自动识别主流 CN 应用/CDN
@@ -44,17 +46,33 @@
 - 🌐 **绕过局域网**：一键开关，局域网流量直连不受影响
 - 🌍 **IPv6 路由**：支持 IPv6 网络访问，可选禁用/启用/优先/仅 IPv6 模式
 - 🔄 **备用节点**：支持配置备用订阅源，主节点不可用时可快速切换
+
+### 测试与诊断
+
+- 🔧 **工具箱按钮**：主界面内嵌工具按钮，提供 TCPing 测试、URL Test 测试、清理不可用节点、网速测试等功能
+- 🌐 **URL Test（默认）**：通过启动临时无头 sing-box 实例进行 HTTP 握手延迟测试，无需连接 VPN 即可测试所有节点真实连通性 (作为 App 启动和刷新时的默认测试方式)
+- ⚡ **Cloudflare 网速测试**：集成 Cloudflare Speed Test，支持下载/上传测速，实时显示速率
+- 📡 **TCPing 测试**：直接 TCP 连接测试节点可达性和延迟
+- 🗑️ **清理不可用节点**：一键移除测试后不可用的节点
+- 🛠️ **网络工具箱**：内置 10 种常用网络检测工具（出口检测、IP查询、WebRTC泄漏、DNS泄漏、速度测试等），一键跳转浏览器使用
+
+### 界面与体验
+
 - 🚩 **智能国旗**：自动识别节点名称中的国旗 Emoji（如 🇫🇮），优雅展示
 - 🔔 **VPN 通知**：实时显示上传/下载速度、累计流量，支持断开/重置连接
 - ⏳ **节流保护**：刷新、切换备用节点、检查更新等操作 5 秒内防重复触发
 - 🔔 **公告系统**：支持远程推送公告通知
+- ℹ️ **关于页面**：展示应用版本信息、开源协议、GitHub 仓库链接和免责声明
+- 🎨 **现代 UI**：基于 Jetpack Compose，Material Design 3 风格
+- 🔧 **开源可定制**：易于修改 API、品牌和配置
+
+### 更新与安全
+
 - 📦 **稳健更新**：
   - 应用内下载，支持断点续传
   - 自动检测下载失败，连续失败 3 次及以上会引导跳转官网下载
   - 原子化更新机制，杜绝安装包损坏
   - 智能权限引导，适配 Android 8.0+ 安装权限
-- 🎨 **现代 UI**：基于 Jetpack Compose，Material Design 3 风格
-- 🔧 **开源可定制**：易于修改 API、品牌和配置
 
 ---
 
@@ -76,7 +94,7 @@
 ### 开发环境
 
 | 工具 | 版本要求 |
-|------|---------|
+|------|---------| 
 | **Android Studio** | Koala | 2024.1.1 或更高 |
 | **JDK** | 17 |
 | **Kotlin** | 1.9.21 |
@@ -107,8 +125,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/firefly-vpn.git
-cd firefly-vpn
+git clone https://github.com/Iskongkongyo/FireflyVPN.git
+cd FireflyVPN
 ```
 
 ### 2. 配置 libbox
@@ -135,8 +153,18 @@ object AppConfig {
     const val NOTICE_URL = "https://your-server.com/api/notice"
     // 官网地址
     const val WEBSITE_URL = "https://your-server.com"
-    // 反馈邮箱
-    const val FEEDBACK_EMAIL = "support@your-domain.com"
+    // 反馈链接（GitHub Issues）
+    const val FEEDBACK_URL = "https://github.com/your-username/your-repo/issues"
+    // 项目源码地址（留空则隐藏关于页相关按钮）
+    const val GITHUB_URL = "https://github.com/your-username/your-repo"
+
+    // 延迟测试 (TCPing & URL Test)
+    const val TCPING_TEST_URL = "https://www.google.com/generate_204"
+    const val URL_TEST_URL = "https://www.google.com/generate_204"
+
+    // 速度测试 (Cloudflare)
+    const val SPEED_TEST_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
+    const val SPEED_TEST_UPLOAD_URL = "https://speed.cloudflare.com/__up"
 }
 ```
 
@@ -171,62 +199,156 @@ private val retrofit = Retrofit.Builder()
 
 ```
 app/src/main/java/xyz/a202132/app/
-├── AppConfig.kt              # 全局配置常量（API地址等）
-├── MainActivity.kt           # 主 Activity
-├── VpnApplication.kt         # Application 类
+├── AppConfig.kt                  # 全局配置常量（API地址、网络工具箱等）
+├── MainActivity.kt               # 主 Activity
+├── VpnApplication.kt             # Application 类
 ├── data/
-│   ├── local/                # 本地数据库
-│   │   ├── AppDatabase.kt    # Room 数据库定义
-│   │   └── NodeDao.kt        # 节点数据访问对象
-│   ├── model/                # 数据模型
-│   │   ├── ApiModels.kt      # API 响应模型
-│   │   ├── Node.kt           # 节点数据模型
-│   │   ├── NodeType.kt       # 代理协议类型枚举
-│   │   ├── PerAppProxyMode.kt     # 分应用代理模式枚举
-│   │   └── IPv6RoutingMode.kt     # IPv6 路由模式枚举
-│   └── repository/           # 数据仓库
-│       └── SettingsRepository.kt  # 设置存储（包含分应用代理、绕过局域网等）
+│   ├── local/                    # 本地数据库
+│   │   ├── AppDatabase.kt       # Room 数据库定义
+│   │   └── NodeDao.kt           # 节点数据访问对象
+│   ├── model/                    # 数据模型
+│   │   ├── ApiModels.kt         # API 响应模型
+│   │   ├── Node.kt              # 节点数据模型
+│   │   ├── NodeType.kt          # 代理协议类型枚举
+│   │   ├── PerAppProxyMode.kt   # 分应用代理模式枚举
+│   │   └── IPv6RoutingMode.kt   # IPv6 路由模式枚举
+│   └── repository/               # 数据仓库
+│       └── SettingsRepository.kt # 设置存储（含分应用代理、绕过局域网等）
 ├── network/
-│   ├── ApiService.kt         # Retrofit API 接口定义
-│   ├── DownloadManager.kt    # 应用内下载管理器（断点续传）
-│   ├── LatencyTester.kt      # 节点延迟测试
-│   ├── NetworkClient.kt      # 网络客户端配置
-│   └── SubscriptionParser.kt # 订阅链接解析器
+│   ├── ApiService.kt             # Retrofit API 接口定义
+│   ├── DownloadManager.kt        # 应用内下载管理器（断点续传）
+│   ├── LatencyTester.kt          # 节点延迟测试（TCPing + URL Test）
+│   ├── NetworkClient.kt          # 网络客户端配置
+│   ├── SpeedTestService.kt       # Cloudflare 网速测试服务
+│   ├── SubscriptionParser.kt     # 订阅链接解析器
+│   └── UrlTestManager.kt         # 无头 sing-box URL Test 管理器
 ├── service/
-│   ├── BoxPlatformInterface.kt  # sing-box 平台接口（TUN 管理、分应用代理）
-│   ├── BoxVpnService.kt      # VPN 服务（sing-box 核心）
-│   └── ServiceManager.kt     # VPN 服务管理器
+│   ├── BoxPlatformInterface.kt   # sing-box 平台接口（TUN 管理、分应用代理）
+│   ├── BoxVpnService.kt          # VPN 服务（sing-box 核心）
+│   ├── HeadlessPlatformInterface.kt  # 无头平台接口（URL Test 专用）
+│   └── ServiceManager.kt         # VPN 服务管理器
 ├── ui/
-│   ├── components/           # 可复用 UI 组件
-│   │   ├── ConnectButton.kt  # 连接按钮
-│   │   ├── DrawerContent.kt  # 侧边栏内容
-│   │   ├── NodeListDialog.kt # 节点列表弹窗
-│   │   ├── NodeSelector.kt   # 节点选择器
-│   │   └── TrafficStatsRow.kt # 流量统计展示
-│   ├── dialogs/              # 对话框
-│   │   ├── Dialogs.kt        # 通用对话框（公告、更新等）
-│   │   └── UserAgreementDialog.kt  # 用户协议弹窗
-│   ├── screens/              # 页面
-│   │   ├── MainScreen.kt     # 主界面
-│   │   └── PerAppProxyScreen.kt  # 分应用代理设置界面
-│   └── theme/                # 主题配置
-│       ├── Color.kt          # 颜色定义
-│       ├── Theme.kt          # 主题配置
-│       └── Type.kt           # 字体排版
+│   ├── components/               # 可复用 UI 组件
+│   │   ├── ConnectButton.kt     # 连接按钮
+│   │   ├── DrawerContent.kt     # 侧边栏内容
+│   │   ├── NodeListDialog.kt    # 节点列表弹窗（含工具按钮）
+│   │   ├── NodeSelector.kt      # 节点选择器
+│   │   └── TrafficStatsRow.kt   # 流量统计展示
+│   ├── dialogs/                  # 对话框
+│   │   ├── AboutDialog.kt       # 关于页面弹窗
+│   │   ├── Dialogs.kt           # 通用对话框（公告、更新等）
+│   │   ├── NetworkToolboxDialog.kt  # 网络工具箱弹窗
+│   │   ├── SpeedTestDialog.kt       # 网速测试弹窗
+│   │   └── UserAgreementDialog.kt   # 用户协议弹窗
+│   ├── screens/                  # 页面
+│   │   ├── MainScreen.kt        # 主界面
+│   │   └── PerAppProxyScreen.kt # 分应用代理设置界面
+│   └── theme/                    # 主题配置
+│       ├── Color.kt             # 颜色定义
+│       ├── Theme.kt             # 主题配置
+│       └── Type.kt              # 字体排版
 ├── util/
-│   ├── CryptoUtils.kt        # AES 加解密工具
-│   ├── NetworkUtils.kt       # 网络状态检测工具
-│   ├── RuleManager.kt        # 智能分流规则管理
-│   ├── SignatureVerifier.kt  # APK 签名验证（JNI 桥接）
-│   └── SingBoxConfigGenerator.kt  # sing-box 配置生成器
+│   ├── CryptoUtils.kt           # AES 加解密工具
+│   ├── NetworkUtils.kt          # 网络状态检测工具
+│   ├── RuleManager.kt           # 智能分流规则管理
+│   ├── SignatureVerifier.kt     # APK 签名验证（JNI 桥接）
+│   └── SingBoxConfigGenerator.kt # sing-box 配置生成器
 └── viewmodel/
-    ├── MainViewModel.kt      # 主界面 ViewModel
-    └── PerAppProxyViewModel.kt  # 分应用代理 ViewModel
+    ├── MainViewModel.kt          # 主界面 ViewModel
+    └── PerAppProxyViewModel.kt   # 分应用代理 ViewModel
+```
+
+### 资源文件结构
+
+```
+app/src/main/
+├── cpp/
+│   ├── CMakeLists.txt            # NDK 构建配置
+│   └── native-lib.cpp            # Native 层（AES 密钥 + 签名校验）
+├── libs/
+│   └── libbox.aar                # sing-box 核心库
+├── res/
+│   ├── drawable/                 # 图标和图片资源
+│   ├── mipmap-*/                 # 应用图标
+│   ├── values/
+│   │   ├── colors.xml            # 颜色资源
+│   │   ├── strings.xml           # 字符串资源
+│   │   └── themes.xml            # 主题定义
+│   └── xml/
+│       ├── file_paths.xml        # FileProvider 路径配置
+│       └── network_security_config.xml  # 网络安全配置
+└── AndroidManifest.xml           # 应用清单
 ```
 
 ---
 
 ## 高级功能
+
+### 工具箱按钮
+
+节点列表弹窗内嵌工具按钮，提供以下功能：
+
+| 功能 | 说明 |
+|------|------|
+| **TCPing** | 直接 TCP 连接测试节点可达性和延迟 |
+| **URL Test** | 通过 ClashAPI 发起 HTTP 握手延迟测试，结果更准确 (默认/推荐) |
+| **网速测试** | 使用 Cloudflare 节点进行真实宽带测速 |
+| **清理不可用** | 一键删除测试后不可用的节点 |
+
+**URL Test 工作原理**：
+
+- **VPN 已连接时**：直接使用现有 sing-box 实例的 ClashAPI (端口 9090)
+- **VPN 未连接时**：自动启动临时无头 sing-box 实例 (端口 19090)，无需 VPN 权限即可测试
+
+> 💡 无头实例不使用 TUN，仅创建本地 HTTP 代理和 ClashAPI，通过操作系统默认路由直接连接代理节点。
+
+---
+
+### 网络工具箱
+
+内置 10 种常用网络检测工具，可在 `AppConfig.kt` 的 `NETWORK_TOOLS_JSON` 中自定义配置：
+
+| 工具 | 用途 | 网站 |
+|------|------|------|
+| 出口检测 | 检测 VPN 出口 IP | ippure.com |
+| IP信息查询 | 查询 IP 详细信息 | ippure.com |
+| WebRTC泄漏 | 检测 WebRTC 是否泄漏真实 IP | ippure.com |
+| DNS泄漏 | 检测 DNS 请求是否走代理 | ippure.com |
+| IP检测 | 综合 IP 检测 | ipcheck.ing |
+| 高精度IP查询 | 高精度 IP 地理位置 | ping0.cc |
+| IP定位 | IP 地理定位 | iplark.com |
+| 伪装度查询 | 代理伪装度检测 | whoer.net |
+| BGP查询 | BGP 路由信息 | bgp.tools |
+| 速度测试 | 网络速度测试 | speedtest.net |
+
+**自定义工具列表**：
+
+修改 `AppConfig.kt` 中的 JSON 数组即可添加、删除或修改工具项：
+
+```kotlin
+const val NETWORK_TOOLS_JSON = """
+[
+  {"name": "工具名称", "url": "https://example.com", "icon": "speed"}
+]
+"""
+```
+
+支持的图标标识：`outbound`、`ip`、`webrtc`、`dns`、`check`、`precision`、`location`、`disguise`、`bgp`、`speed`
+
+---
+
+### 关于页面
+
+显示应用版本信息、开源协议声明、项目链接等。
+
+**配置位置**：  
+- 版本号：`app/build.gradle.kts` → `versionName` / `versionCode`  
+- GitHub 链接：`AppConfig.kt` → `GITHUB_URL`（留空则隐藏相关按钮）  
+- 反馈链接：`AppConfig.kt` → `FEEDBACK_URL`
+
+**设置位置**：侧边栏 → 关于
+
+---
 
 ### 分应用代理
 
@@ -497,6 +619,28 @@ Release 版本默认移除所有 `android.util.Log` 调用（包括 `Log.d`、`L
 ```
 
 修改后需重新 Build Release 版本。
+
+---
+
+### 6. 网络安全配置
+
+`network_security_config.xml` 控制应用的 HTTP 明文流量策略：
+
+```xml
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">your-domain.com</domain>
+        <domain>127.0.0.1</domain>  <!-- URL Test ClashAPI 本地通信 -->
+    </domain-config>
+</network-security-config>
+```
+
+> ⚠️ `127.0.0.1` 的明文放行是 URL Test 功能必需的（ClashAPI 使用 HTTP 协议通信），请勿移除。
 
 ---
 
@@ -834,22 +978,19 @@ versionName — 字符串，格式通常为 主版本.次版本.修订号（如 
 
 或在 Compose 主题文件中修改 Material 3 颜色方案。
 
----
+------
 
-### 修改智能分流规则
+### 自定义网络工具箱
 
-**文件**: `app/src/main/java/xyz/a202132/app/util/SingBoxConfigGenerator.kt`
+**文件**: `app/src/main/java/xyz/a202132/app/AppConfig.kt`
 
-在 `createDnsConfig()` 和 `createRoute()` 方法中修改 `domain_suffix` 列表：
+修改 `NETWORK_TOOLS_JSON` 数组，按照以下格式添加或修改工具项：
 
-```kotlin
-add("domain_suffix", JsonArray().apply {
-    add("cn")  // .cn 域名
-    add("bilibili.com")
-    add("taobao.com")
-    // 添加更多域名...
-})
+```json
+{"name": "工具名称", "url": "https://example.com", "icon": "icon_key"}
 ```
+
+如需添加新的图标类型，需同时修改 `NetworkToolboxDialog.kt` 中的 `getToolIcon()` 函数。
 
 ---
 
@@ -913,11 +1054,11 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 
 ## 常见问题
 
-### Q: **编写rule_set相关功能代码时运行报错 "unknown field rule_set" 怎么办？**
-**A**: 当前 libbox 版本不支持 `rule_set` 特性。项目已使用硬编码的 `domain_suffix` 规则代替，请确保使用最新代码。
-
-### Q: 节点无法连接 / NAME_NOT_RESOLVED
-**A**: 域名类节点（如 Trojan）需要通过本地 DNS 解析。代码已自动处理节点域名白名单，请确保使用最新版本。
+### Q: URL Test 全部显示超时
+**A**: 
+1. 确认 `network_security_config.xml` 中包含 `<domain>127.0.0.1</domain>` 的明文放行配置
+2. URL Test 需要网络连接，确保 WiFi 或移动数据正常
+3. 检查 Logcat 中 `SingBoxCoreLog` 标签的日志，排查 sing-box 核心错误
 
 ### Q: 如何添加新的代理协议？
 **A**:
@@ -925,6 +1066,9 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 1. 在 `NodeType.kt` 添加新枚举值
 2. 在 `SubscriptionParser.kt` 添加解析逻辑
 3. 在 `SingBoxConfigGenerator.kt` 添加 outbound 生成逻辑
+
+### Q: 如何添加新的网络工具？
+**A**: 编辑 `AppConfig.kt` 中的 `NETWORK_TOOLS_JSON`，按格式添加新条目。如需自定义图标，同时修改 `NetworkToolboxDialog.kt` 中的 `getToolIcon()` 函数。
 
 ---
 

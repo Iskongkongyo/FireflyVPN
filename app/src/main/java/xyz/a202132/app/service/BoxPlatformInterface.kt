@@ -24,7 +24,7 @@ import io.nekohasekai.libbox.NetworkInterface as LibboxNetworkInterface
 /**
  * libbox 平台接口实现
  * 参考官方 sing-box-for-android 实现
- * 适配 libbox 1.12.16 API
+ * 适配 libbox 1.13.0-rc.3 API
  */
 class BoxPlatformInterface(
     private val service: BoxVpnService
@@ -47,7 +47,7 @@ class BoxPlatformInterface(
     private val availableNetworks = java.util.concurrent.ConcurrentHashMap<Network, NetworkCapabilities>()
     
     /**
-     * 启动网络监控 - 必须在 Libbox.newService 之前调用
+     * 启动网络监控 - 必须在 CommandServer 创建之前调用
      */
     fun startNetworkMonitor() {
         Log.d(TAG, "Starting network monitor")
@@ -339,43 +339,28 @@ class BoxPlatformInterface(
         sourcePort: Int,
         destinationAddress: String?,
         destinationPort: Int
-    ): Int {
+    ): io.nekohasekai.libbox.ConnectionOwner {
+        val owner = io.nekohasekai.libbox.ConnectionOwner()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                return connectivityManager.getConnectionOwnerUid(
+                val uid = connectivityManager.getConnectionOwnerUid(
                     ipProtocol,
                     InetSocketAddress(sourceAddress, sourcePort),
                     InetSocketAddress(destinationAddress, destinationPort)
                 )
+                owner.userId = uid
+                // 尝试获取包名
+                try {
+                    val packages = service.packageManager.getPackagesForUid(uid)
+                    owner.androidPackageName = packages?.firstOrNull() ?: ""
+                } catch (e: Exception) {
+                    owner.androidPackageName = ""
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "getConnectionOwnerUid failed", e)
             }
         }
-        return -1
-    }
-    
-    override fun packageNameByUid(uid: Int): String {
-        return try {
-            val packages = service.packageManager.getPackagesForUid(uid)
-            packages?.firstOrNull() ?: ""
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get package name for uid $uid", e)
-            ""
-        }
-    }
-    
-    override fun uidByPackageName(packageName: String?): Int {
-        if (packageName.isNullOrEmpty()) return -1
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                service.packageManager.getPackageUid(packageName, 0)
-            } else {
-                @Suppress("DEPRECATION")
-                service.packageManager.getApplicationInfo(packageName, 0).uid
-            }
-        } catch (e: PackageManager.NameNotFoundException) {
-            -1
-        }
+        return owner
     }
     
     override fun usePlatformAutoDetectInterfaceControl(): Boolean {
@@ -491,12 +476,6 @@ class BoxPlatformInterface(
     
     override fun underNetworkExtension(): Boolean {
         return false
-    }
-    
-    override fun writeLog(message: String?) {
-        message?.let {
-            Log.d(TAG, "libbox: $it")
-        }
     }
     
     fun closeTun() {

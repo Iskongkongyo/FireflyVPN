@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import xyz.a202132.app.AppConfig
 import xyz.a202132.app.data.local.AppDatabase
 import xyz.a202132.app.data.model.*
@@ -47,6 +48,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _showNodeList = MutableStateFlow(false)
     val showNodeList = _showNodeList.asStateFlow()
     
+    // 测试类型标签 (用于 UI 显示)
+    private val _testingLabel = MutableStateFlow<String?>(null)
+    val testingLabel = _testingLabel.asStateFlow()
+    
+    // 过滤不可用节点
+    private val _filterUnavailable = MutableStateFlow(false)
+    val filterUnavailable = _filterUnavailable.asStateFlow()
+    
     private val _notice = MutableStateFlow<NoticeInfo?>(null)
     val notice = _notice.asStateFlow()
     
@@ -66,19 +75,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isAutoSelecting = _isAutoSelecting.asStateFlow()
     
     // Data
-    val nodes = nodeDao.getAllNodes()
-        .map { list ->
-            list.sortedWith(
-                compareByDescending<Node> { it.isAvailable } // Available first
-                    .thenBy { it.sortOrder } // Then by sort order
-                    .thenBy { if (it.latency >= 0) it.latency else Int.MAX_VALUE } // Then by latency (untested last)
-            )
-        }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.Lazily,
-            emptyList()
+    val nodes = combine(
+        nodeDao.getAllNodes(),
+        _filterUnavailable
+    ) { list, filterOut ->
+        val filtered = if (filterOut) list.filter { it.latency != -2 } else list
+        filtered.sortedWith(
+            compareByDescending<Node> { it.isAvailable }
+                .thenBy { it.sortOrder }
+                .thenBy { if (it.latency >= 0) it.latency else Int.MAX_VALUE }
         )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        emptyList()
+    )
     
     // 初始化完成标志 - 用于防止 UI 闪烁
     private val _isInitialized = MutableStateFlow(false)
@@ -127,7 +138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uploadTotal = ServiceManager.uploadTotal
     val downloadTotal = ServiceManager.downloadTotal
     
-    val currentNode = combine(nodes, selectedNodeId) { nodeList, selectedId ->
+    val currentNode = combine(nodeDao.getAllNodes(), selectedNodeId) { nodeList, selectedId ->
         nodeList.find { it.id == selectedId }
     }.stateIn(viewModelScope, SharingStarted.Lazily, null)
     
@@ -234,6 +245,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             _isLoading.value = true
+            _filterUnavailable.value = false // 刷新时重置过滤
             try {
                 // 1. 检查网络状态
                 if (!NetworkUtils.isNetworkAvailable(getApplication())) {
@@ -300,7 +312,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     nodeDao.insertNodes(fetchedNodes)
                     
                     // 自动测试延迟 (直接传入节点列表，避免等待 Flow 更新)
-                    testAllNodes(fetchedNodes)
+                    // 用户更关心连通性与真实延迟，改用 URL Test
+                    urlTestAllNodes(fetchedNodes)
                     
                     Log.d(tag, "Fetched ${fetchedNodes.size} nodes")
                 }.onFailure { e ->
@@ -411,38 +424,183 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
-    /**
-     * 测试所有节点延迟
-     * @param targetNodes 指定要测试的节点列表，若为null则使用当前显示的节点
-     */
-    /**
-     * 测试所有节点延迟
-     * @param targetNodes 指定要测试的节点列表，若为null则使用当前显示的节点
-     */
     fun testAllNodes(targetNodes: List<Node>? = null) {
         viewModelScope.launch {
             _isTesting.value = true
+            _testingLabel.value = "TCPing 测试中..."
             try {
-                // 如果传入了节点就用传入的，否则从 StateFlow 获取
                 val currentNodes = targetNodes ?: nodes.value
-                internalTestNodes(currentNodes)
+                internalTestNodes(currentNodes) { completed, total ->
+                    _testingLabel.value = "TCPing 测试中 ($completed/$total)"
+                }
             } finally {
                 _isTesting.value = false
+                _testingLabel.value = null
             }
+        }
+    }
+    
+    /**
+     * URL Test 所有节点延迟 (通过 ClashAPI)
+     * VPN 运行中 → 用现有 ClashAPI (port 9090)
+     * VPN 未运行 → 启动临时无头 sing-box 实例 (port 19090)
+     */
+    fun urlTestAllNodes(targetNodes: List<Node>? = null) {
+        viewModelScope.launch {
+            _isTesting.value = true
+            _testingLabel.value = "URL Test 测试中..."
+            
+            val isVpnRunning = vpnState.value == VpnState.CONNECTED
+            val clashApiPort: Int
+            var startedHeadless = false
+            
+            try {
+                val currentNodes = targetNodes ?: nodes.value
+                if (currentNodes.isEmpty()) {
+                    _error.value = "没有可用节点"
+                    return@launch
+                }
+                
+                if (isVpnRunning) {
+                    // VPN 已连接，直接使用现有 ClashAPI
+                    clashApiPort = 9090
+                    Log.d(tag, "URL Test via existing VPN ClashAPI (port $clashApiPort)")
+                } else {
+                    // VPN 未连接，启动临时无头 sing-box 实例
+                    clashApiPort = xyz.a202132.app.network.UrlTestManager.CLASH_API_PORT
+                    Log.d(tag, "URL Test via headless instance (port $clashApiPort)")
+                    _testingLabel.value = "启动测试引擎..."
+                    
+                    val started = withContext(Dispatchers.IO) {
+                        xyz.a202132.app.network.UrlTestManager.start(getApplication(), currentNodes)
+                    }
+                    if (!started) {
+                        _error.value = "启动测试引擎失败"
+                        return@launch
+                    }
+                    startedHeadless = true
+                    
+                    // 等待 sing-box 初始化 + ClashAPI 就绪
+                    delay(2000)
+                    
+                    // 健康检查：等待 ClashAPI 可用 (必须在 IO 线程)
+                    val clashReady = withContext(Dispatchers.IO) {
+                        var ready = false
+                        for (retry in 1..6) {
+                            try {
+                                val checkUrl = java.net.URL("http://127.0.0.1:$clashApiPort/proxies")
+                                val conn = checkUrl.openConnection() as java.net.HttpURLConnection
+                                conn.connectTimeout = 2000
+                                conn.readTimeout = 2000
+                                if (conn.responseCode == 200) {
+                                    ready = true
+                                    conn.disconnect()
+                                    break
+                                }
+                                conn.disconnect()
+                            } catch (e: Exception) {
+                                Log.d(tag, "ClashAPI not ready yet (attempt $retry/6): ${e.message}")
+                            }
+                            delay(1000)
+                        }
+                        ready
+                    }
+                    
+                    if (!clashReady) {
+                        _error.value = "测试引擎启动超时"
+                        return@launch
+                    }
+                    
+                    _testingLabel.value = "URL Test 测试中..."
+                }
+                
+                // 诊断：查询 ClashAPI 注册的代理
+                if (startedHeadless) {
+                    withContext(Dispatchers.IO) {
+                        val proxiesResponse = xyz.a202132.app.network.UrlTestManager.diagnoseProxies()
+                        Log.d(tag, "ClashAPI proxies: ${proxiesResponse?.take(500)}")
+                    }
+                }
+                
+                Log.d(tag, "URL Testing ${currentNodes.size} nodes via ClashAPI (port=$clashApiPort)")
+                
+                val results = latencyTester.urlTestAllNodes(currentNodes, clashApiPort) { completed, total ->
+                    _testingLabel.value = "URL Test 测试中 ($completed/$total)"
+                }
+                Log.d(tag, "Got ${results.size} URL test results")
+                
+                // 更新数据库
+                results.forEach { result ->
+                    nodeDao.updateLatency(
+                        nodeId = result.nodeId,
+                        latency = result.latency,
+                        isAvailable = result.isAvailable,
+                        testedAt = System.currentTimeMillis()
+                    )
+                }
+            } finally {
+                // 读取 sing-box 核心日志
+                if (startedHeadless) {
+                    withContext(Dispatchers.IO) {
+                        val coreLog = xyz.a202132.app.network.UrlTestManager.readLogFile(getApplication())
+                        if (coreLog != null) {
+                            // 分段输出日志（logcat 单条消息有长度限制）
+                            coreLog.lines().forEach { line ->
+                                Log.d("SingBoxCoreLog", line)
+                            }
+                        } else {
+                            Log.w(tag, "No sing-box core log available")
+                        }
+                    }
+                }
+                // 如果启动了临时实例，关闭它
+                if (startedHeadless) {
+                    xyz.a202132.app.network.UrlTestManager.stop()
+                }
+                _isTesting.value = false
+                _testingLabel.value = null
+            }
+        }
+    }
+    
+    /**
+     * 打开节点列表并开始指定类型的测试
+     */
+    fun showNodeListForTest(testType: String) {
+        _showNodeList.value = true
+        when (testType) {
+            "tcping" -> testAllNodes()
+            "urltest" -> urlTestAllNodes()
+        }
+    }
+    
+    /**
+     * 清理不可用节点 (UI 过滤，不删除数据库)
+     */
+    fun cleanUnavailableNodes() {
+        val timeoutCount = nodes.value.count { it.latency == -2 }
+        if (timeoutCount > 0) {
+            _filterUnavailable.value = true
+            _error.value = "已隐藏 $timeoutCount 个超时节点"
+        } else {
+            _error.value = "没有需要清理的超时节点"
         }
     }
 
     /**
      * 内部测试逻辑 (Suspend)
      */
-    private suspend fun internalTestNodes(currentNodes: List<Node>) {
+    private suspend fun internalTestNodes(
+        currentNodes: List<Node>,
+        onProgress: ((completed: Int, total: Int) -> Unit)? = null
+    ) {
         if (currentNodes.isEmpty()) return
         
         Log.d(tag, "Testing ${currentNodes.size} nodes")
         
         // 统一使用 Socket 测试 (直接连接节点服务器测试可达性)
         // 即使 VPN 运行中也可以工作，因为测试的是节点服务器本身
-        val results = latencyTester.testAllNodes(currentNodes)
+        val results = latencyTester.testAllNodes(currentNodes, onProgress)
         Log.d(tag, "Got ${results.size} test results")
         
         // 更新数据库
@@ -462,7 +620,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun startAutoSelectAndConnect() {
         viewModelScope.launch {
-            if (_isAutoSelecting.value) return@launch
+            if (_isAutoSelecting.value || _isTesting.value) return@launch
             
             _isAutoSelecting.value = true
             try {
@@ -475,8 +633,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 
-                // 2. 强制重新测试所有节点延迟 (使用 Socket 测试，因为 VPN 此时未连接)
-                internalTestNodes(allNodes)
+                // 2. 强制重新测试所有节点延迟 (使用 URL Test，因为用户偏好真实连通性)
+                // 注意：如果 VPN 未连接，这会启动临时无头实例，耗时较长 (2-3s)
+                urlTestAllNodes(allNodes)
+                
+                // 等待测试完成 (urlTestAllNodes 是异步开启的，但 updateLatency 是同步写入数据库的)
+                // 这里需要一种机制等待测试结束或者轮询数据库
+                // 由于 urlTestAllNodes 在 viewModelScope.launch 中开启了另一个 launch (fire-and-forget for UI), 
+                // 我们需要将其改为 suspend 或者等待 _isTesting 变回 false
+                
+                // 简单的做法：等待 _isTesting 变为 true (如果还没变)，然后等待它变为 false
+                delay(500) // 等待测试启动
+                while (_isTesting.value) {
+                    delay(500)
+                }
                 
                 // 3. 寻找最佳节点 (latency > 0)
                 // 重新从数据库获取最新状态 (或者 internalTestNodes 返回结果，这里直接查库更保险)
@@ -784,6 +954,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun hideNodeList() {
         _showNodeList.value = false
+    }
+    
+    fun resetFilter() {
+        _filterUnavailable.value = false
     }
     
     fun dismissNotice() {

@@ -63,6 +63,9 @@ google-services.json
 subscription.txt
 subscription_base64.txt
 
+# Sensitive notes
+firefly签名.txt
+
 # OS-specific
 .DS_Store
 Thumbs.db
