@@ -72,7 +72,7 @@ object ServiceManager {
         
         val intent = Intent(context, BoxVpnService::class.java).apply {
             action = BoxVpnService.ACTION_START
-            putExtra(BoxVpnService.EXTRA_NODE_RAW_LINK, node.rawLink)
+            putExtra(BoxVpnService.EXTRA_NODE_RAW_LINK, node.getRawLinkPlain())
             putExtra(BoxVpnService.EXTRA_NODE_NAME, node.name)
             putExtra(BoxVpnService.EXTRA_PROXY_MODE, proxyMode.name)
         }

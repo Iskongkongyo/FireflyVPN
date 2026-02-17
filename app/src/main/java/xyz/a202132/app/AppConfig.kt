@@ -24,13 +24,13 @@ data class SpeedTestSize(
  */
 object AppConfig {
     // API URLs
-    const val SUBSCRIPTION_URL = "https://firefly.202132.xyz/apis/nodes"
-    const val UPDATE_URL = "https://firefly.202132.xyz/apis/update"
-    const val NOTICE_URL = "https://firefly.202132.xyz/apis/notice"
-    const val WEBSITE_URL = "https://iskongkongyo.github.io/"
+    const val SUBSCRIPTION_URL = "https://your-server.com/api/nodes"
+    const val UPDATE_URL = "https://your-server.com/api/update"
+    const val NOTICE_URL = "https://your-server.com/api/notice"
+    const val WEBSITE_URL = "https://your-website.com"
     
     // Contact
-    const val FEEDBACK_EMAIL = ""
+    const val FEEDBACK_EMAIL = "support@your-domain.com"
     const val FEEDBACK_URL = "https://github.com/Iskongkongyo/FireflyVPN/issues"  // 反馈链接，留空则不跳转
     const val GITHUB_URL = "https://github.com/Iskongkongyo/FireflyVPN"  // 项目源码地址，留空则隐藏关于页相关按钮
     

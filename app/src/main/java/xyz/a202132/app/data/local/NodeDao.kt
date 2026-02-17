@@ -35,6 +35,15 @@ interface NodeDao {
     
     @Query("UPDATE nodes SET latency = :latency, isAvailable = :isAvailable, lastTestedAt = :testedAt WHERE id = :nodeId")
     suspend fun updateLatency(nodeId: String, latency: Int, isAvailable: Boolean, testedAt: Long)
+
+    @Query("UPDATE nodes SET downloadMbps = :downloadMbps, uploadMbps = :uploadMbps, autoTestedAt = :testedAt WHERE id = :nodeId")
+    suspend fun updateBandwidth(nodeId: String, downloadMbps: Float, uploadMbps: Float, testedAt: Long)
+
+    @Query("UPDATE nodes SET unlockSummary = :summary, unlockPassed = :passed, autoTestedAt = :testedAt WHERE id = :nodeId")
+    suspend fun updateUnlock(nodeId: String, summary: String, passed: Boolean, testedAt: Long)
+
+    @Query("UPDATE nodes SET isAvailable = :available, autoTestStatus = :status, autoTestedAt = :testedAt WHERE id = :nodeId")
+    suspend fun updateAutoTestStatus(nodeId: String, available: Boolean, status: String, testedAt: Long)
     
     @Query("SELECT COUNT(*) FROM nodes")
     suspend fun getNodeCount(): Int

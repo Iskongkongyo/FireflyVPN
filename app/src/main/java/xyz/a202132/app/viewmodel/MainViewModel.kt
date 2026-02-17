@@ -6,12 +6,16 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import xyz.a202132.app.AppConfig
+import xyz.a202132.app.BuildConfig
 import xyz.a202132.app.data.local.AppDatabase
 import xyz.a202132.app.data.model.*
 import xyz.a202132.app.data.repository.SettingsRepository
@@ -19,9 +23,16 @@ import xyz.a202132.app.network.LatencyTester
 import xyz.a202132.app.network.NetworkClient
 import xyz.a202132.app.network.SubscriptionParser
 import xyz.a202132.app.network.DownloadManager
+import xyz.a202132.app.network.UnlockTestManager
 import xyz.a202132.app.service.BoxVpnService
 import xyz.a202132.app.service.ServiceManager
 import xyz.a202132.app.util.NetworkUtils
+import xyz.a202132.app.util.UnlockTestsRunner
+import xyz.a202132.app.util.CryptoUtils
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ServerSocket
+import java.util.concurrent.TimeUnit
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
@@ -73,6 +84,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Blocking Auto-Select State
     private val _isAutoSelecting = MutableStateFlow(false)
     val isAutoSelecting = _isAutoSelecting.asStateFlow()
+
+    // 自动化测试状态
+    private val _autoTestProgress = MutableStateFlow(AutoTestProgress())
+    val autoTestProgress = _autoTestProgress.asStateFlow()
+    private var autoTestJob: Job? = null
     
     // Data
     val nodes = combine(
@@ -129,6 +145,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         SharingStarted.Lazily,
         true // 默认 true 防止闪烁，init 里会 reset 状态或者第一次启动时读出来是 false
     )
+
+    // 自动化测试设置
+    val autoTestEnabled = settingsRepository.autoTestEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+    val autoTestFilterUnavailable = settingsRepository.autoTestFilterUnavailable.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val autoTestLatencyThresholdMs = settingsRepository.autoTestLatencyThresholdMs.stateIn(viewModelScope, SharingStarted.Lazily, 600)
+    val autoTestBandwidthEnabled = settingsRepository.autoTestBandwidthEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+    val autoTestBandwidthThresholdMbps = settingsRepository.autoTestBandwidthThresholdMbps.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestBandwidthWifiOnly = settingsRepository.autoTestBandwidthWifiOnly.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val autoTestBandwidthSizeMb = settingsRepository.autoTestBandwidthSizeMb.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestUnlockEnabled = settingsRepository.autoTestUnlockEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+    val autoTestNodeLimit = settingsRepository.autoTestNodeLimit.stateIn(viewModelScope, SharingStarted.Lazily, 20)
     
     val vpnState = ServiceManager.vpnState
     
@@ -143,6 +170,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(viewModelScope, SharingStarted.Lazily, null)
     
     init {
+        // 将历史明文 rawLink 迁移为加密存储（一次性后台处理）
+        viewModelScope.launch(Dispatchers.IO) {
+            migrateRawLinksToEncrypted()
+            logRawLinkEncryptionStats("startup_migration")
+        }
+
         // 启动时加载数据
         viewModelScope.launch {
             // 每次启动重置选择状态 (不记住上次选择)
@@ -155,7 +188,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 监听用户协议状态，只有同意后才初始化网络请求
             isUserAgreementAccepted.collect { accepted ->
                 if (accepted) {
-                    fetchNodes(bypassThrottle = true)
+                    val autoEnabled = settingsRepository.autoTestEnabled.first()
+                    if (autoEnabled) {
+                        startAutomatedTest()
+                    } else {
+                        fetchNodes(bypassThrottle = true)
+                    }
                     checkNotice()
                     checkUpdate(isAuto = true)
                 }
@@ -232,7 +270,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * @param skipBackupMode 强制跳过备用模式逻辑 (用于回退场景，避免 DataStore 异步更新导致重复触发)
      */
-    fun fetchNodes(skipBackupMode: Boolean = false, bypassThrottle: Boolean = false) {
+    fun fetchNodes(skipBackupMode: Boolean = false, bypassThrottle: Boolean = false, runUrlTest: Boolean = true) {
         viewModelScope.launch {
             // 节流检查 (内部调用可跳过)
             if (!bypassThrottle) {
@@ -310,10 +348,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 保存到数据库
                     nodeDao.deleteAllNodes()
                     nodeDao.insertNodes(fetchedNodes)
+
+                    if (BuildConfig.DEBUG) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            logRawLinkEncryptionStats("after_fetch_insert")
+                        }
+                    }
                     
                     // 自动测试延迟 (直接传入节点列表，避免等待 Flow 更新)
                     // 用户更关心连通性与真实延迟，改用 URL Test
-                    urlTestAllNodes(fetchedNodes)
+                    if (runUrlTest) {
+                        urlTestAllNodes(fetchedNodes)
+                    }
                     
                     Log.d(tag, "Fetched ${fetchedNodes.size} nodes")
                 }.onFailure { e ->
@@ -578,12 +624,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 清理不可用节点 (UI 过滤，不删除数据库)
      */
     fun cleanUnavailableNodes() {
-        val timeoutCount = nodes.value.count { it.latency == -2 }
-        if (timeoutCount > 0) {
+        val hiddenCount = nodes.value.count { it.latency == -2 || !it.isAvailable }
+        if (hiddenCount > 0) {
             _filterUnavailable.value = true
-            _error.value = "已隐藏 $timeoutCount 个超时节点"
+            _error.value = "已隐藏 $hiddenCount 个超时/不可用节点"
         } else {
-            _error.value = "没有需要清理的超时节点"
+            _error.value = "没有需要清理的超时/不可用节点"
         }
     }
 
@@ -975,6 +1021,350 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun acceptUserAgreement() {
         viewModelScope.launch {
             settingsRepository.setUserAgreementAccepted(true)
+        }
+    }
+
+    // 自动化测试设置写入
+    fun setAutoTestEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestEnabled(enabled) }
+    }
+
+    fun setAutoTestFilterUnavailable(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestFilterUnavailable(enabled) }
+    }
+
+    fun setAutoTestLatencyThresholdMs(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestLatencyThresholdMs(value) }
+    }
+
+    fun setAutoTestBandwidthEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthEnabled(enabled) }
+    }
+
+    fun setAutoTestBandwidthThresholdMbps(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthThresholdMbps(value) }
+    }
+
+    fun setAutoTestBandwidthWifiOnly(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthWifiOnly(enabled) }
+    }
+
+    fun setAutoTestBandwidthSizeMb(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthSizeMb(value) }
+    }
+
+    fun setAutoTestUnlockEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestUnlockEnabled(enabled) }
+    }
+
+    fun setAutoTestNodeLimit(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestNodeLimit(value) }
+    }
+
+    fun startAutomatedTest() {
+        if (_autoTestProgress.value.running) return
+
+        val config = AutoTestConfig(
+            enabled = autoTestEnabled.value,
+            filterUnavailable = autoTestFilterUnavailable.value,
+            latencyThresholdMs = autoTestLatencyThresholdMs.value,
+            bandwidthEnabled = autoTestBandwidthEnabled.value,
+            bandwidthThresholdMbps = autoTestBandwidthThresholdMbps.value,
+            bandwidthWifiOnly = autoTestBandwidthWifiOnly.value,
+            bandwidthSizeMb = autoTestBandwidthSizeMb.value,
+            unlockEnabled = autoTestUnlockEnabled.value,
+            nodeLimit = autoTestNodeLimit.value
+        )
+
+        autoTestJob = viewModelScope.launch {
+            try {
+                _autoTestProgress.value = AutoTestProgress(
+                    running = true,
+                    stage = AutoTestStage.FETCH_NODES,
+                    message = "正在拉取节点..."
+                )
+
+                fetchNodes(bypassThrottle = true, runUrlTest = false)
+                waitForCondition(timeoutMs = 25_000) { !isLoading.value && nodes.value.isNotEmpty() }
+
+                var workingNodes = nodes.value.take(config.nodeLimit)
+                if (workingNodes.isEmpty()) {
+                    _error.value = "自动化测试失败：没有可用节点"
+                    _autoTestProgress.value = AutoTestProgress(running = false, stage = AutoTestStage.FAILED, message = "没有可用节点")
+                    return@launch
+                }
+
+                _autoTestProgress.value = AutoTestProgress(
+                    running = true,
+                    stage = AutoTestStage.URL_TEST,
+                    message = "正在进行 URL Test...",
+                    total = workingNodes.size
+                )
+
+                urlTestAllNodes(workingNodes)
+                waitForCondition(timeoutMs = 120_000) { !isTesting.value }
+
+                workingNodes = nodeDao.getAllNodes().first().take(config.nodeLimit)
+
+                _autoTestProgress.value = AutoTestProgress(
+                    running = true,
+                    stage = AutoTestStage.FILTER_LATENCY,
+                    message = "按延迟阈值筛选节点...",
+                    total = workingNodes.size
+                )
+
+                val latencyFiltered = if (config.filterUnavailable) {
+                    workingNodes.filter { it.isAvailable && it.latency > 0 && it.latency <= config.latencyThresholdMs }
+                } else {
+                    workingNodes
+                }
+
+                val removedByLatency = workingNodes.filterNot { node -> latencyFiltered.any { it.id == node.id } }
+                removedByLatency.forEach { node ->
+                    nodeDao.updateAutoTestStatus(node.id, false, "LATENCY_FILTERED", System.currentTimeMillis())
+                }
+                latencyFiltered.forEach { node ->
+                    nodeDao.updateAutoTestStatus(node.id, true, "LATENCY_PASSED", System.currentTimeMillis())
+                }
+
+                workingNodes = latencyFiltered
+
+                if (config.bandwidthEnabled) {
+                    val wifiAllowed = !config.bandwidthWifiOnly || NetworkUtils.isWifiConnected(getApplication())
+                    if (!wifiAllowed) {
+                        _error.value = "当前非 Wi-Fi 网络，已跳过带宽测试"
+                    } else {
+                        _autoTestProgress.value = AutoTestProgress(
+                            running = true,
+                            stage = AutoTestStage.BANDWIDTH_TEST,
+                            message = "逐节点带宽测试中...",
+                            total = workingNodes.size
+                        )
+
+                        val bandwidthMap = mutableMapOf<String, Float>()
+                        workingNodes.forEachIndexed { index, node ->
+                            _autoTestProgress.value = AutoTestProgress(
+                                running = true,
+                                stage = AutoTestStage.BANDWIDTH_TEST,
+                                message = "带宽测试: ${node.getDisplayName()} (${index + 1}/${workingNodes.size})",
+                                completed = index + 1,
+                                total = workingNodes.size
+                            )
+                            val mbps = testNodeBandwidthMbps(node, config.bandwidthSizeMb)
+                            bandwidthMap[node.id] = mbps
+                            nodeDao.updateBandwidth(node.id, mbps, 0f, System.currentTimeMillis())
+                        }
+
+                        _autoTestProgress.value = AutoTestProgress(
+                            running = true,
+                            stage = AutoTestStage.FILTER_BANDWIDTH,
+                            message = "按带宽阈值筛选节点...",
+                            total = workingNodes.size
+                        )
+
+                        val filtered = workingNodes.filter { (bandwidthMap[it.id] ?: 0f) >= config.bandwidthThresholdMbps.toFloat() }
+                        val removed = workingNodes.filterNot { node -> filtered.any { it.id == node.id } }
+                        removed.forEach { node ->
+                            nodeDao.updateAutoTestStatus(node.id, false, "BANDWIDTH_FILTERED", System.currentTimeMillis())
+                        }
+                        filtered.forEach { node ->
+                            nodeDao.updateAutoTestStatus(node.id, true, "BANDWIDTH_PASSED", System.currentTimeMillis())
+                        }
+                        workingNodes = filtered
+                    }
+                }
+
+                if (config.unlockEnabled && workingNodes.isNotEmpty()) {
+                    _autoTestProgress.value = AutoTestProgress(
+                        running = true,
+                        stage = AutoTestStage.UNLOCK_TEST,
+                        message = "逐节点流媒体解锁测试中...",
+                        total = workingNodes.size
+                    )
+
+                    workingNodes.forEachIndexed { index, node ->
+                        _autoTestProgress.value = AutoTestProgress(
+                            running = true,
+                            stage = AutoTestStage.UNLOCK_TEST,
+                            message = "解锁测试: ${node.getDisplayName()} (${index + 1}/${workingNodes.size})",
+                            completed = index + 1,
+                            total = workingNodes.size
+                        )
+                        val (summary, passed) = testNodeUnlock(node)
+                        nodeDao.updateUnlock(node.id, summary, passed, System.currentTimeMillis())
+                        nodeDao.updateAutoTestStatus(
+                            nodeId = node.id,
+                            available = node.isAvailable && passed,
+                            status = if (passed) "UNLOCK_PASSED" else "UNLOCK_FAILED",
+                            testedAt = System.currentTimeMillis()
+                        )
+                    }
+                }
+
+                _autoTestProgress.value = AutoTestProgress(
+                    running = false,
+                    stage = AutoTestStage.DONE,
+                    message = "完成：保留 ${workingNodes.size} 个节点",
+                    completed = workingNodes.size,
+                    total = config.nodeLimit
+                )
+            } catch (e: Exception) {
+                Log.e(tag, "Automated test failed", e)
+                _autoTestProgress.value = AutoTestProgress(
+                    running = false,
+                    stage = AutoTestStage.FAILED,
+                    message = "失败: ${e.message}"
+                )
+                _error.value = "自动化测试失败: ${e.message}"
+            } finally {
+                autoTestJob = null
+            }
+        }
+    }
+
+    fun cancelAutomatedTest() {
+        autoTestJob?.cancel()
+        autoTestJob = null
+        _autoTestProgress.value = AutoTestProgress(
+            running = false,
+            stage = AutoTestStage.CANCELED,
+            message = "自动化测试已取消"
+        )
+    }
+
+    private suspend fun waitForCondition(timeoutMs: Long, condition: () -> Boolean) {
+        val start = System.currentTimeMillis()
+        while (!condition()) {
+            if (System.currentTimeMillis() - start > timeoutMs) {
+                throw IllegalStateException("等待测试阶段超时")
+            }
+            delay(300)
+        }
+    }
+
+    private suspend fun testNodeBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
+        val port = pickFreePort()
+        val started = UnlockTestManager.start(getApplication(), node, port)
+        if (!started) return@withContext 0f
+
+        try {
+            val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
+            val client = OkHttpClient.Builder()
+                .proxy(proxy)
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build()
+
+            val bytes = sizeMb.toLong() * 1_000_000L
+            val url = "${AppConfig.SPEED_TEST_DOWNLOAD_URL}?bytes=$bytes&r=${System.currentTimeMillis()}"
+            val request = Request.Builder().url(url).build()
+
+            val start = System.currentTimeMillis()
+            var total = 0L
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext 0f
+                val source = resp.body?.source() ?: return@withContext 0f
+                val buffer = ByteArray(8192)
+                var read: Int
+                while (source.read(buffer).also { read = it } != -1) {
+                    total += read
+                }
+            }
+            val durationMs = (System.currentTimeMillis() - start).coerceAtLeast(1)
+            (total * 8f / 1_000_000f) / (durationMs / 1000f)
+        } catch (e: Exception) {
+            Log.e(tag, "Bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
+            0f
+        } finally {
+            UnlockTestManager.stop()
+        }
+    }
+
+    private suspend fun testNodeUnlock(node: Node): Pair<String, Boolean> = withContext(Dispatchers.IO) {
+        val port = pickFreePort()
+        val started = UnlockTestManager.start(getApplication(), node, port)
+        if (!started) return@withContext "启动测试代理失败" to false
+
+        try {
+            val result = UnlockTestsRunner.run(
+                context = getApplication(),
+                args = listOf(
+                    "-socks-proxy", "socks5://127.0.0.1:$port",
+                    "-f", "0",
+                    "-L", "zh",
+                    "-b=false",
+                    "-s=false"
+                ),
+                timeoutSeconds = 120
+            )
+            val lines = result.stdout.lineSequence()
+                .map { cleanLogLine(it) }
+                .filter { it.isNotEmpty() }
+                .filter { it.contains("YES", true) || it.contains("NO", true) || it.contains("Available", true) || it.contains("Region", true) }
+                .take(200)
+                .toList()
+
+            val yes = lines.count { it.contains("YES", true) || it.contains("Available", true) }
+            val no = lines.count { it.contains("NO", true) }
+            val pass = yes >= 3 && yes >= no
+            val fullResult = if (lines.isEmpty()) {
+                if (result.stdout.isBlank()) "未识别到解锁结果" else "未识别关键结果（可在流媒体工具里查看完整输出）"
+            } else {
+                "YES=$yes, NO=$no\n" + lines.joinToString("\n")
+            }
+            fullResult to pass
+        } catch (e: Exception) {
+            Log.e(tag, "Unlock test failed for ${node.getDisplayName()}: ${e.message}")
+            ("解锁测试失败: ${e.message}") to false
+        } finally {
+            UnlockTestManager.stop()
+        }
+    }
+
+    private fun cleanLogLine(input: String): String {
+        return input
+            .replace(Regex("\\u001B\\[[;\\d]*[ -/]*[@-~]"), "")
+            .replace(Regex("\\[[0-9;]*m"), "")
+            .replace("[0m", "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun pickFreePort(): Int {
+        return ServerSocket(0).use { it.localPort }
+    }
+
+    private suspend fun migrateRawLinksToEncrypted() {
+        runCatching {
+            val current = nodeDao.getAllNodes().first()
+            var migrated = 0
+            current.forEach { node ->
+                if (!node.isRawLinkEncrypted()) {
+                    val encrypted = CryptoUtils.encryptForStorage(node.rawLink)
+                    if (encrypted != node.rawLink) {
+                        nodeDao.updateNode(node.copy(rawLink = encrypted))
+                        migrated++
+                    }
+                }
+            }
+            if (migrated > 0) {
+                Log.i(tag, "Migrated $migrated node rawLink entries to encrypted storage")
+            }
+        }.onFailure {
+            Log.w(tag, "RawLink migration skipped: ${it.message}")
+        }
+    }
+
+    private suspend fun logRawLinkEncryptionStats(scene: String) {
+        if (!BuildConfig.DEBUG) return
+        runCatching {
+            val current = nodeDao.getAllNodes().first()
+            val total = current.size
+            val encrypted = current.count { it.isRawLinkEncrypted() }
+            val plain = total - encrypted
+            Log.d("RawLinkCryptoStats", "scene=$scene total=$total encrypted=$encrypted plain=$plain")
+        }.onFailure {
+            Log.w("RawLinkCryptoStats", "scene=$scene stats_failed=${it.message}")
         }
     }
 }

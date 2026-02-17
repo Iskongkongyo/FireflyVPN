@@ -89,6 +89,9 @@ class SingBoxConfigGenerator {
                     addProperty("tag", "direct")
                 })
             })
+            add("route", JsonObject().apply {
+                addProperty("final", "proxy")
+            })
         }
         return gson.toJson(config)
     }
@@ -380,7 +383,8 @@ class SingBoxConfigGenerator {
     }
     
     private fun createVlessOutbound(node: Node): JsonObject {
-        val uri = Uri.parse(node.rawLink)
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
         
         return JsonObject().apply {
             addProperty("type", "vless")
@@ -418,7 +422,8 @@ class SingBoxConfigGenerator {
     }
     
     private fun createVmessOutbound(node: Node): JsonObject {
-        val base64Content = node.rawLink.removePrefix("vmess://")
+        val rawLink = node.getRawLinkPlain()
+        val base64Content = rawLink.removePrefix("vmess://")
         val jsonStr = String(Base64.decode(base64Content, Base64.DEFAULT), Charsets.UTF_8)
         val vmessConfig = gson.fromJson(jsonStr, JsonObject::class.java)
         
@@ -447,7 +452,8 @@ class SingBoxConfigGenerator {
     
     
     private fun createTrojanOutbound(node: Node): JsonObject {
-        val uri = Uri.parse(node.rawLink)
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
         
         return JsonObject().apply {
             addProperty("type", "trojan")
@@ -470,7 +476,8 @@ class SingBoxConfigGenerator {
     }
     
     private fun createHysteria2Outbound(node: Node): JsonObject {
-        val normalizedLink = node.rawLink.replace("hy2://", "hysteria2://")
+        val rawLink = node.getRawLinkPlain()
+        val normalizedLink = rawLink.replace("hy2://", "hysteria2://")
         val uri = Uri.parse(normalizedLink)
         
         return JsonObject().apply {
@@ -498,7 +505,8 @@ class SingBoxConfigGenerator {
     }
     
     private fun createShadowsocksOutbound(node: Node): JsonObject {
-        val linkContent = node.rawLink.removePrefix("ss://").substringBefore("#")
+        val rawLink = node.getRawLinkPlain()
+        val linkContent = rawLink.removePrefix("ss://").substringBefore("#")
         val methodPassword = try {
             if (linkContent.contains("@")) {
                 val base64Part = linkContent.substringBefore("@")
@@ -524,7 +532,8 @@ class SingBoxConfigGenerator {
     }
 
     private fun createSocksOutbound(node: Node): JsonObject {
-        val uri = Uri.parse(node.rawLink)
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
         val userInfo = uri.userInfo ?: ""
         val parts = userInfo.split(":")
         val username = parts.getOrNull(0) ?: ""
@@ -532,7 +541,7 @@ class SingBoxConfigGenerator {
         
         // 检测 SOCKS 版本 (socks4:// -> 4, socks5:// 或 socks:// -> 5)
         val version = when {
-            node.rawLink.startsWith("socks4://") -> "4"
+            rawLink.startsWith("socks4://") -> "4"
             else -> "5"
         }
 
@@ -549,12 +558,13 @@ class SingBoxConfigGenerator {
     }
     
     private fun createHttpOutbound(node: Node): JsonObject {
-        val uri = Uri.parse(node.rawLink)
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
         val userInfo = uri.userInfo ?: ""
         val parts = userInfo.split(":")
         val username = parts.getOrNull(0) ?: ""
         val password = parts.getOrNull(1) ?: ""
-        val useTls = node.rawLink.startsWith("https://")
+        val useTls = rawLink.startsWith("https://")
 
         return JsonObject().apply {
             addProperty("type", "http")

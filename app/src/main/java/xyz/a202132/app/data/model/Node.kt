@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import xyz.a202132.app.util.CryptoUtils
 
 /**
  * 代理节点数据模型
@@ -23,8 +24,24 @@ data class Node(
     val latency: Int = -1,                // 延迟(ms), -1表示未测试
     val isAvailable: Boolean = true,      // 是否可用
     val lastTestedAt: Long = 0,           // 上次测试时间戳
-    val sortOrder: Int = 0                // 排序顺序
+    val sortOrder: Int = 0,               // 排序顺序
+    val downloadMbps: Float = 0f,         // 下载带宽(Mbps)
+    val uploadMbps: Float = 0f,           // 上传带宽(Mbps)
+    val unlockSummary: String = "",       // 流媒体解锁摘要
+    val unlockPassed: Boolean = false,    // 是否通过解锁阈值
+    val autoTestStatus: String = "",      // 自动化测试状态
+    val autoTestedAt: Long = 0            // 自动化测试时间戳
 ) {
+    /**
+     * 读取原始链接（自动兼容明文/密文存储）
+     */
+    fun getRawLinkPlain(): String = CryptoUtils.decryptFromStorage(rawLink)
+
+    /**
+     * 是否为加密存储格式
+     */
+    fun isRawLinkEncrypted(): Boolean = rawLink.startsWith("enc:gcm:")
+
     /**
      * 获取国旗emoji
      */
@@ -101,6 +118,7 @@ data class Node(
         return when {
             latency == -1 -> "测试中"
             latency == -2 -> "超时"
+            !isAvailable && autoTestStatus.contains("FILTERED", ignoreCase = true) -> "不达标"
             !isAvailable -> "不可用"
             else -> "${latency}ms"
         }

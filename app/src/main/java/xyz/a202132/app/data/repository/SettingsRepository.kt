@@ -35,6 +35,17 @@ class SettingsRepository(private val context: Context) {
         // 备用节点
         private val BACKUP_NODE_ENABLED = booleanPreferencesKey("backup_node_enabled")
         private val BACKUP_NODE_URL = stringPreferencesKey("backup_node_url")
+
+        // 自动化测试设置
+        private val AUTO_TEST_ENABLED = booleanPreferencesKey("auto_test_enabled")
+        private val AUTO_TEST_FILTER_UNAVAILABLE = booleanPreferencesKey("auto_test_filter_unavailable")
+        private val AUTO_TEST_LATENCY_THRESHOLD = intPreferencesKey("auto_test_latency_threshold")
+        private val AUTO_TEST_BANDWIDTH_ENABLED = booleanPreferencesKey("auto_test_bandwidth_enabled")
+        private val AUTO_TEST_BANDWIDTH_THRESHOLD = intPreferencesKey("auto_test_bandwidth_threshold")
+        private val AUTO_TEST_BANDWIDTH_WIFI_ONLY = booleanPreferencesKey("auto_test_bandwidth_wifi_only")
+        private val AUTO_TEST_BANDWIDTH_SIZE_MB = intPreferencesKey("auto_test_bandwidth_size_mb")
+        private val AUTO_TEST_UNLOCK_ENABLED = booleanPreferencesKey("auto_test_unlock_enabled")
+        private val AUTO_TEST_NODE_LIMIT = intPreferencesKey("auto_test_node_limit")
     }
     
     val selectedNodeId: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -183,6 +194,105 @@ class SettingsRepository(private val context: Context) {
             } else {
                 preferences[BACKUP_NODE_URL] = url
             }
+        }
+    }
+
+    // 自动化测试设置
+    val autoTestEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_ENABLED] ?: false
+    }
+
+    suspend fun setAutoTestEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_ENABLED] = enabled
+        }
+    }
+
+    val autoTestFilterUnavailable: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_FILTER_UNAVAILABLE] ?: true
+    }
+
+    suspend fun setAutoTestFilterUnavailable(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_FILTER_UNAVAILABLE] = enabled
+        }
+    }
+
+    val autoTestLatencyThresholdMs: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_LATENCY_THRESHOLD] ?: 600
+    }
+
+    suspend fun setAutoTestLatencyThresholdMs(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_LATENCY_THRESHOLD] = value.coerceAtLeast(50)
+        }
+    }
+
+    val autoTestBandwidthEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BANDWIDTH_ENABLED] ?: false
+    }
+
+    suspend fun setAutoTestBandwidthEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_ENABLED] = enabled
+        }
+    }
+
+    val autoTestBandwidthThresholdMbps: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] ?: 10
+    }
+
+    suspend fun setAutoTestBandwidthThresholdMbps(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] = value.coerceAtLeast(1)
+        }
+    }
+
+    val autoTestBandwidthWifiOnly: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BANDWIDTH_WIFI_ONLY] ?: true
+    }
+
+    suspend fun setAutoTestBandwidthWifiOnly(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_WIFI_ONLY] = enabled
+        }
+    }
+
+    val autoTestBandwidthSizeMb: Flow<Int> = context.dataStore.data.map { preferences ->
+        val value = preferences[AUTO_TEST_BANDWIDTH_SIZE_MB] ?: 10
+        when (value) {
+            1, 10, 25, 50 -> value
+            else -> 10
+        }
+    }
+
+    suspend fun setAutoTestBandwidthSizeMb(value: Int) {
+        val normalized = when (value) {
+            1, 10, 25, 50 -> value
+            else -> 10
+        }
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_SIZE_MB] = normalized
+        }
+    }
+
+    val autoTestUnlockEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_UNLOCK_ENABLED] ?: false
+    }
+
+    suspend fun setAutoTestUnlockEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_UNLOCK_ENABLED] = enabled
+        }
+    }
+
+    val autoTestNodeLimit: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_NODE_LIMIT] ?: 20
+    }
+
+    suspend fun setAutoTestNodeLimit(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_NODE_LIMIT] = value.coerceIn(1, 200)
         }
     }
 }

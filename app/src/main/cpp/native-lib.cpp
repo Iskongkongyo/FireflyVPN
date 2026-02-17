@@ -99,7 +99,7 @@ extern "C" JNIEXPORT void JNICALL Java_xyz_a202132_app_util_SignatureVerifier_ve
  */
 extern "C" JNIEXPORT jstring JNICALL Java_xyz_a202132_app_util_CryptoUtils_getNativeKey(JNIEnv* env, jobject /* this */) {
     // 混淆算法：加密字节 = 原始字符 ^ (SEED + 索引)
-   // AES密钥示例: "MySecretKey12345" (16 bytes)
+    // AES密钥示例: "MySecretKey12345" (16 bytes)
 const int SEED = 0x33;
 unsigned char encrypted_key[] = {
     0x7E, 0x7D, 0x20, 0x5E, 0x5A, 0x60, 0x5A, 0x40,

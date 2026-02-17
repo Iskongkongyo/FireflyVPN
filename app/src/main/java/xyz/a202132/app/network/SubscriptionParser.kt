@@ -130,7 +130,7 @@ class SubscriptionParser {
             type = NodeType.VLESS,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     
@@ -153,7 +153,7 @@ class SubscriptionParser {
             type = NodeType.VMESS,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     
@@ -173,7 +173,7 @@ class SubscriptionParser {
             type = NodeType.TROJAN,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     
@@ -194,7 +194,7 @@ class SubscriptionParser {
             type = NodeType.HYSTERIA2,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     
@@ -226,7 +226,7 @@ class SubscriptionParser {
             type = NodeType.SHADOWSOCKS,
             server = server ?: "",
             port = if (port == -1) 443 else port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
 
@@ -247,7 +247,7 @@ class SubscriptionParser {
             type = NodeType.SOCKS,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     
@@ -269,7 +269,7 @@ class SubscriptionParser {
             type = NodeType.HTTP,
             server = server,
             port = port,
-            rawLink = link
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
         )
     }
     

@@ -141,7 +141,7 @@ class BoxVpnService : VpnService() {
                 // 但为了保险，我们尝试匹配 rawLink 对应的节点
                 var selectedNodeId: String? = null
                 if (nodeName != "自动选择") {
-                    selectedNodeId = allNodes.find { it.rawLink == rawLink }?.id
+                    selectedNodeId = allNodes.find { it.getRawLinkPlain() == rawLink }?.id
                 }
                 
                 // 读取绕过局域网设置

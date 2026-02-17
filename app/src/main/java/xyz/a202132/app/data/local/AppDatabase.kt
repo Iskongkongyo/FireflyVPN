@@ -10,7 +10,7 @@ import xyz.a202132.app.data.model.NodeTypeConverter
 
 @Database(
     entities = [Node::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(NodeTypeConverter::class)

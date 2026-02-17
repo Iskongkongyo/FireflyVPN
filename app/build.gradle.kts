@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 import java.io.FileInputStream
 
 plugins {
@@ -16,8 +16,8 @@ android {
         applicationId = "xyz.a202132.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.11.0"
+        versionCode = 13
+        versionName = "1.12.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -25,8 +25,8 @@ android {
         }
 
         ndk {
-            // sing-box核心默认打包了所有架构（armeabi-v7a, arm64-v8a, x86, x86_64）的动态库（.so 文件）
-            // 仅保留 ARM 架构，x86和x86_64架构被剔除以减小 APK 体积
+            // sing-box鏍稿績榛樿鎵撳寘浜嗘墍鏈夋灦鏋勶紙armeabi-v7a, arm64-v8a, x86, x86_64锛夌殑鍔ㄦ€佸簱锛?so 鏂囦欢锛?
+            // 浠呬繚鐣?ARM 鏋舵瀯锛寈86鍜寈86_64鏋舵瀯琚墧闄や互鍑忓皬 APK 浣撶Н
             abiFilters.add("armeabi-v7a")
             abiFilters.add("arm64-v8a")
         }
@@ -34,7 +34,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags("")
-                // 限制只打包 ARM 架构的 .so 文件
+                // 闄愬埗鍙墦鍖?ARM 鏋舵瀯鐨?.so 鏂囦欢
                 abiFilters("armeabi-v7a", "arm64-v8a")
             }
         }
@@ -97,8 +97,8 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
-        // 压缩 native libraries 以减小 APK 体积
-        // 代价是首次启动时需要解压，略慢一点点
+        // 鍘嬬缉 native libraries 浠ュ噺灏?APK 浣撶Н
+        // 浠ｄ环鏄娆″惎鍔ㄦ椂闇€瑕佽В鍘嬶紝鐣ユ參涓€鐐圭偣
         jniLibs {
             useLegacyPackaging = true
         }
@@ -166,11 +166,12 @@ dependencies {
     implementation("com.github.megatronking.stringfog:xor:5.0.0")
 }
 
-// StringFog字符串混淆
+// StringFog config
 configure<com.github.megatronking.stringfog.plugin.StringFogExtension> {
     implementation = "com.github.megatronking.stringfog.xor.StringFogImpl"
     enable = true
-    fogPackages = arrayOf("xyz.a202132.app") // 只加密我们自己的代码
+    fogPackages = arrayOf("xyz.a202132.app") // 鍙姞瀵嗘垜浠嚜宸辩殑浠ｇ爜
     kg = com.github.megatronking.stringfog.plugin.kg.RandomKeyGenerator()
     mode = com.github.megatronking.stringfog.plugin.StringFogMode.base64
 }
+

@@ -20,12 +20,17 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import xyz.a202132.app.data.model.ProxyMode
+import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.VpnState
 import xyz.a202132.app.ui.components.*
 import xyz.a202132.app.ui.dialogs.*
+import xyz.a202132.app.ui.dialogs.AutoTestDetailDialog
+import xyz.a202132.app.ui.dialogs.AutoTestResultDialog
 import xyz.a202132.app.ui.dialogs.SpeedTestDialog
+import xyz.a202132.app.ui.dialogs.UnlockTestDialog
 import xyz.a202132.app.ui.theme.*
 import xyz.a202132.app.viewmodel.MainViewModel
+import xyz.a202132.app.viewmodel.AutoTestStage
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +63,11 @@ fun MainScreen(
     
     // UI States
     var showSpeedTestDialog by remember { mutableStateOf(false) }
+    var showUnlockTestDialog by remember { mutableStateOf(false) }
+    var showNetworkToolboxDialog by remember { mutableStateOf(false) }
+    var showAutoTestResultDialog by remember { mutableStateOf(false) }
+    var nodeAutoTestDetail by remember { mutableStateOf<Node?>(null) }
+    var autoTestWasRunning by remember { mutableStateOf(false) }
     
     // 流量统计
     val uploadSpeed by viewModel.uploadSpeed.collectAsState()
@@ -73,6 +83,18 @@ fun MainScreen(
     
     // 备用节点设置
     val backupNodeEnabled by viewModel.backupNodeEnabled.collectAsState()
+
+    // 自动化测试设置/状态
+    val autoTestEnabled by viewModel.autoTestEnabled.collectAsState()
+    val autoTestFilterUnavailable by viewModel.autoTestFilterUnavailable.collectAsState()
+    val autoTestLatencyThresholdMs by viewModel.autoTestLatencyThresholdMs.collectAsState()
+    val autoTestBandwidthEnabled by viewModel.autoTestBandwidthEnabled.collectAsState()
+    val autoTestBandwidthThresholdMbps by viewModel.autoTestBandwidthThresholdMbps.collectAsState()
+    val autoTestBandwidthWifiOnly by viewModel.autoTestBandwidthWifiOnly.collectAsState()
+    val autoTestBandwidthSizeMb by viewModel.autoTestBandwidthSizeMb.collectAsState()
+    val autoTestUnlockEnabled by viewModel.autoTestUnlockEnabled.collectAsState()
+    val autoTestNodeLimit by viewModel.autoTestNodeLimit.collectAsState()
+    val autoTestProgress by viewModel.autoTestProgress.collectAsState()
     // val showBackupFailedDialog by viewModel.showBackupFailedDialog.collectAsState() // Removed
     
     // Show error toast
@@ -90,6 +112,13 @@ fun MainScreen(
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             xyz.a202132.app.service.ServiceManager.clearCellularWarning()
         }
+    }
+
+    LaunchedEffect(autoTestProgress.running, autoTestProgress.stage) {
+        if (autoTestWasRunning && !autoTestProgress.running && autoTestProgress.stage == AutoTestStage.DONE) {
+            showAutoTestResultDialog = true
+        }
+        autoTestWasRunning = autoTestProgress.running
     }
     
     // Drawer
@@ -109,6 +138,27 @@ fun MainScreen(
                     notice = noticeConfig, // Use noticeConfig for Drawer (Backup Node visibility)
                     backupNodeEnabled = backupNodeEnabled,
                     onToggleBackupNode = { viewModel.setBackupNodeEnabled(it) },
+                    autoTestEnabled = autoTestEnabled,
+                    autoTestFilterUnavailable = autoTestFilterUnavailable,
+                    autoTestLatencyThresholdMs = autoTestLatencyThresholdMs,
+                    autoTestBandwidthEnabled = autoTestBandwidthEnabled,
+                    autoTestBandwidthThresholdMbps = autoTestBandwidthThresholdMbps,
+                    autoTestBandwidthWifiOnly = autoTestBandwidthWifiOnly,
+                    autoTestBandwidthSizeMb = autoTestBandwidthSizeMb,
+                    autoTestUnlockEnabled = autoTestUnlockEnabled,
+                    autoTestNodeLimit = autoTestNodeLimit,
+                    autoTestProgress = autoTestProgress,
+                    onSetAutoTestEnabled = { viewModel.setAutoTestEnabled(it) },
+                    onSetAutoTestFilterUnavailable = { viewModel.setAutoTestFilterUnavailable(it) },
+                    onSetAutoTestLatencyThresholdMs = { viewModel.setAutoTestLatencyThresholdMs(it) },
+                    onSetAutoTestBandwidthEnabled = { viewModel.setAutoTestBandwidthEnabled(it) },
+                    onSetAutoTestBandwidthThresholdMbps = { viewModel.setAutoTestBandwidthThresholdMbps(it) },
+                    onSetAutoTestBandwidthWifiOnly = { viewModel.setAutoTestBandwidthWifiOnly(it) },
+                    onSetAutoTestBandwidthSizeMb = { viewModel.setAutoTestBandwidthSizeMb(it) },
+                    onSetAutoTestUnlockEnabled = { viewModel.setAutoTestUnlockEnabled(it) },
+                    onSetAutoTestNodeLimit = { viewModel.setAutoTestNodeLimit(it) },
+                    onStartAutomatedTest = { viewModel.startAutomatedTest() },
+                    onCancelAutomatedTest = { viewModel.cancelAutomatedTest() },
                     onClose = { scope.launch { drawerState.close() } }
                 )
             }
@@ -165,12 +215,27 @@ fun MainScreen(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("\uD83E\uDDF0 网络工具箱") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        showNetworkToolboxDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("\uD83E\uDDF9 隐藏超时节点") },
                                     onClick = {
                                         showToolsMenu = false
                                         viewModel.cleanUnavailableNodes()
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("\uD83C\uDFAC 流媒体解锁测试") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        showUnlockTestDialog = true
+                                    }
+                                )
+
                             }
                         }
                         
@@ -231,6 +296,15 @@ fun MainScreen(
                         
                         if (currentNode!!.latency > 0) {
                             LatencyBadge(node = currentNode!!)
+                        }
+
+                        if (currentNode!!.downloadMbps > 0f) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "带宽: %.1f Mbps".format(currentNode!!.downloadMbps),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 } else {
@@ -308,6 +382,22 @@ fun MainScreen(
             onDismiss = { viewModel.hideNodeList() }
         )
     }
+
+    if (showAutoTestResultDialog) {
+        val qualifiedNodes = nodes.filter { it.autoTestedAt > 0 && it.isAvailable }
+        AutoTestResultDialog(
+            nodes = qualifiedNodes,
+            onDismiss = { showAutoTestResultDialog = false },
+            onNodeClick = { node -> nodeAutoTestDetail = node }
+        )
+    }
+
+    nodeAutoTestDetail?.let { node ->
+        AutoTestDetailDialog(
+            node = node,
+            onDismiss = { nodeAutoTestDetail = null }
+        )
+    }
     
     // 通知弹窗
     notice?.let { noticeInfo ->
@@ -333,6 +423,14 @@ fun MainScreen(
     // 网速测试弹窗
     if (showSpeedTestDialog) {
         SpeedTestDialog(onDismiss = { showSpeedTestDialog = false })
+    }
+
+    if (showUnlockTestDialog) {
+        UnlockTestDialog(onDismiss = { showUnlockTestDialog = false })
+    }
+
+    if (showNetworkToolboxDialog) {
+        NetworkToolboxDialog(onDismiss = { showNetworkToolboxDialog = false })
     }
     
     // 加载弹窗

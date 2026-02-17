@@ -29,7 +29,6 @@ import android.content.Intent
 import android.net.Uri
 import xyz.a202132.app.data.model.IPv6RoutingMode
 import xyz.a202132.app.ui.dialogs.AboutDialog
-import xyz.a202132.app.ui.dialogs.NetworkToolboxDialog
 import xyz.a202132.app.ui.theme.*
 
 @Composable
@@ -43,13 +42,34 @@ fun DrawerContent(
     notice: xyz.a202132.app.data.model.NoticeInfo?,
     backupNodeEnabled: Boolean,
     onToggleBackupNode: (Boolean) -> Unit,
+    autoTestEnabled: Boolean,
+    autoTestFilterUnavailable: Boolean,
+    autoTestLatencyThresholdMs: Int,
+    autoTestBandwidthEnabled: Boolean,
+    autoTestBandwidthThresholdMbps: Int,
+    autoTestBandwidthWifiOnly: Boolean,
+    autoTestBandwidthSizeMb: Int,
+    autoTestUnlockEnabled: Boolean,
+    autoTestNodeLimit: Int,
+    autoTestProgress: xyz.a202132.app.viewmodel.AutoTestProgress,
+    onSetAutoTestEnabled: (Boolean) -> Unit,
+    onSetAutoTestFilterUnavailable: (Boolean) -> Unit,
+    onSetAutoTestLatencyThresholdMs: (Int) -> Unit,
+    onSetAutoTestBandwidthEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthWifiOnly: (Boolean) -> Unit,
+    onSetAutoTestBandwidthSizeMb: (Int) -> Unit,
+    onSetAutoTestUnlockEnabled: (Boolean) -> Unit,
+    onSetAutoTestNodeLimit: (Int) -> Unit,
+    onStartAutomatedTest: () -> Unit,
+    onCancelAutomatedTest: () -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
     var showIPv6Dialog by remember { mutableStateOf(false) }
     var showBackupNodeConfirmDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
-    var showNetworkToolboxDialog by remember { mutableStateOf(false) }
+    var showAutoTestDialog by remember { mutableStateOf(false) }
     
     // 检查备用节点是否可用
     val backupNodeInfo = notice?.backupNodes
@@ -142,10 +162,12 @@ fun DrawerContent(
         )
 
         DrawerMenuItem(
-            icon = Icons.Outlined.Construction,
-            title = "网络工具箱",
-            subtitle = "常用检测工具",
-            onClick = { showNetworkToolboxDialog = true }
+            icon = Icons.Outlined.Settings,
+            title = "自动化测试",
+            subtitle = autoTestProgress.message.ifBlank {
+                if (autoTestProgress.running) "运行中..." else "未开启"
+            },
+            onClick = { showAutoTestDialog = true }
         )
         
         DrawerMenuItem(
@@ -256,10 +278,32 @@ fun DrawerContent(
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
     }
-    
-    // 网络工具箱弹窗
-    if (showNetworkToolboxDialog) {
-        NetworkToolboxDialog(onDismiss = { showNetworkToolboxDialog = false })
+
+    if (showAutoTestDialog) {
+        AutoTestConfigDialog(
+            autoTestEnabled = autoTestEnabled,
+            autoTestFilterUnavailable = autoTestFilterUnavailable,
+            autoTestLatencyThresholdMs = autoTestLatencyThresholdMs,
+            autoTestBandwidthEnabled = autoTestBandwidthEnabled,
+            autoTestBandwidthThresholdMbps = autoTestBandwidthThresholdMbps,
+            autoTestBandwidthWifiOnly = autoTestBandwidthWifiOnly,
+            autoTestBandwidthSizeMb = autoTestBandwidthSizeMb,
+            autoTestUnlockEnabled = autoTestUnlockEnabled,
+            autoTestNodeLimit = autoTestNodeLimit,
+            autoTestProgress = autoTestProgress,
+            onSetAutoTestEnabled = onSetAutoTestEnabled,
+            onSetAutoTestFilterUnavailable = onSetAutoTestFilterUnavailable,
+            onSetAutoTestLatencyThresholdMs = onSetAutoTestLatencyThresholdMs,
+            onSetAutoTestBandwidthEnabled = onSetAutoTestBandwidthEnabled,
+            onSetAutoTestBandwidthThresholdMbps = onSetAutoTestBandwidthThresholdMbps,
+            onSetAutoTestBandwidthWifiOnly = onSetAutoTestBandwidthWifiOnly,
+            onSetAutoTestBandwidthSizeMb = onSetAutoTestBandwidthSizeMb,
+            onSetAutoTestUnlockEnabled = onSetAutoTestUnlockEnabled,
+            onSetAutoTestNodeLimit = onSetAutoTestNodeLimit,
+            onStartAutomatedTest = onStartAutomatedTest,
+            onCancelAutomatedTest = onCancelAutomatedTest,
+            onDismiss = { showAutoTestDialog = false }
+        )
     }
 }
 
@@ -434,6 +478,150 @@ private fun IPv6RoutingDialog(
             }
         },
         confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun AutoTestConfigDialog(
+    autoTestEnabled: Boolean,
+    autoTestFilterUnavailable: Boolean,
+    autoTestLatencyThresholdMs: Int,
+    autoTestBandwidthEnabled: Boolean,
+    autoTestBandwidthThresholdMbps: Int,
+    autoTestBandwidthWifiOnly: Boolean,
+    autoTestBandwidthSizeMb: Int,
+    autoTestUnlockEnabled: Boolean,
+    autoTestNodeLimit: Int,
+    autoTestProgress: xyz.a202132.app.viewmodel.AutoTestProgress,
+    onSetAutoTestEnabled: (Boolean) -> Unit,
+    onSetAutoTestFilterUnavailable: (Boolean) -> Unit,
+    onSetAutoTestLatencyThresholdMs: (Int) -> Unit,
+    onSetAutoTestBandwidthEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthWifiOnly: (Boolean) -> Unit,
+    onSetAutoTestBandwidthSizeMb: (Int) -> Unit,
+    onSetAutoTestUnlockEnabled: (Boolean) -> Unit,
+    onSetAutoTestNodeLimit: (Int) -> Unit,
+    onStartAutomatedTest: () -> Unit,
+    onCancelAutomatedTest: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var latencyInput by remember { mutableStateOf(autoTestLatencyThresholdMs.toString()) }
+    var bandwidthInput by remember { mutableStateOf(autoTestBandwidthThresholdMbps.toString()) }
+    var nodeLimitInput by remember { mutableStateOf(autoTestNodeLimit.toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自动化测试") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = if (autoTestProgress.running) {
+                        "当前阶段: ${autoTestProgress.stage}\n${autoTestProgress.message}"
+                    } else {
+                        "拉节点 -> URL Test -> 带宽测试 -> 解锁测试"
+                    },
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autoTestEnabled, onCheckedChange = onSetAutoTestEnabled)
+                    Text("启用自动化测试")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autoTestFilterUnavailable, onCheckedChange = onSetAutoTestFilterUnavailable)
+                    Text("自动排除无效/高延迟节点")
+                }
+
+                OutlinedTextField(
+                    value = latencyInput,
+                    onValueChange = {
+                        latencyInput = it.filter { ch -> ch.isDigit() }
+                        latencyInput.toIntOrNull()?.let(onSetAutoTestLatencyThresholdMs)
+                    },
+                    label = { Text("延迟阈值(ms)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autoTestBandwidthEnabled, onCheckedChange = onSetAutoTestBandwidthEnabled)
+                    Text("自动进行下行带宽测试")
+                }
+
+                OutlinedTextField(
+                    value = bandwidthInput,
+                    onValueChange = {
+                        bandwidthInput = it.filter { ch -> ch.isDigit() }
+                        bandwidthInput.toIntOrNull()?.let(onSetAutoTestBandwidthThresholdMbps)
+                    },
+                    label = { Text("带宽阈值(Mbps)") },
+                    singleLine = true,
+                    enabled = autoTestBandwidthEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = autoTestBandwidthWifiOnly,
+                        onCheckedChange = onSetAutoTestBandwidthWifiOnly,
+                        enabled = autoTestBandwidthEnabled
+                    )
+                    Text("仅 Wi-Fi 执行下行带宽测试")
+                }
+
+                Text(
+                    text = "下载测试流量大小",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    listOf(1, 10, 25, 50).forEach { mb ->
+                        FilterChip(
+                            selected = autoTestBandwidthSizeMb == mb,
+                            onClick = { onSetAutoTestBandwidthSizeMb(mb) },
+                            label = { Text("${mb}MB") },
+                            enabled = autoTestBandwidthEnabled
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autoTestUnlockEnabled, onCheckedChange = onSetAutoTestUnlockEnabled)
+                    Text("自动测试流媒体解锁")
+                }
+
+                OutlinedTextField(
+                    value = nodeLimitInput,
+                    onValueChange = {
+                        nodeLimitInput = it.filter { ch -> ch.isDigit() }
+                        nodeLimitInput.toIntOrNull()?.let(onSetAutoTestNodeLimit)
+                    },
+                    label = { Text("测试节点上限") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (autoTestProgress.running) {
+                    onCancelAutomatedTest()
+                } else {
+                    onStartAutomatedTest()
+                }
+            }) {
+                Text(if (autoTestProgress.running) "取消测试" else "开始测试")
+            }
+        },
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("关闭")
