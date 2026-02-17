@@ -24,23 +24,27 @@ data class SpeedTestSize(
  */
 object AppConfig {
     // API URLs
-    const val SUBSCRIPTION_URL = "https://your-server.com/api/nodes"
-    const val UPDATE_URL = "https://your-server.com/api/update"
-    const val NOTICE_URL = "https://your-server.com/api/notice"
-    const val WEBSITE_URL = "https://your-website.com"
+    const val SUBSCRIPTION_URL = "https://firefly.202132.xyz/apis/nodes"
+    const val UPDATE_URL = "https://firefly.202132.xyz/apis/update"
+    const val NOTICE_URL = "https://firefly.202132.xyz/apis/notice"
+    const val WEBSITE_URL = "https://iskongkongyo.github.io/"
     
     // Contact
-    const val FEEDBACK_EMAIL = "support@your-domain.com"
+    const val FEEDBACK_EMAIL = ""
     const val FEEDBACK_URL = "https://github.com/Iskongkongyo/FireflyVPN/issues"  // 反馈链接，留空则不跳转
     const val GITHUB_URL = "https://github.com/Iskongkongyo/FireflyVPN"  // 项目源码地址，留空则隐藏关于页相关按钮
     
     // Latency Test
-    // 通常用http://cp.cloudflare.com/generate_204或https://www.google.com/generate_204
+    // 常用http://cp.cloudflare.com/generate_204或https://www.google.com/generate_204
     const val TCPING_TEST_URL = "https://www.google.com/generate_204"
     const val TCPING_TEST_TIMEOUT = 3000L
     
     const val URL_TEST_URL = "https://www.google.com/generate_204"
     const val URL_TEST_TIMEOUT = 5000L
+    
+    // Concurrency
+    const val TCPING_CONCURRENCY = 16
+    const val URL_TEST_CONCURRENCY = 10
     
     // VPN
     const val VPN_MTU = 9000
@@ -75,7 +79,7 @@ object AppConfig {
 [
   {"label": "1MB", "bytes": 1000000},
   {"label": "10MB", "bytes": 10000000},
-  {"label": "15MB", "bytes": 15000000},
+  {"label": "25MB", "bytes": 25000000},
   {"label": "50MB", "bytes": 50000000}
 ]
 """

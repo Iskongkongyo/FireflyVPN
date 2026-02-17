@@ -34,7 +34,7 @@ class LatencyTester {
             val socket = java.net.Socket()
             
             try {
-                socket.connect(java.net.InetSocketAddress(node.server, node.port), 3000)
+                socket.connect(java.net.InetSocketAddress(node.server, node.port), xyz.a202132.app.AppConfig.TCPING_TEST_TIMEOUT.toInt())
                 
                 val elapsed = (System.currentTimeMillis() - start).toInt() 
                 val finalLatency = if (elapsed < 1) 1 else elapsed
@@ -74,7 +74,7 @@ class LatencyTester {
     ): List<LatencyResult> = withContext(Dispatchers.IO) {
         Log.d(tag, "========== TCPing START: ${nodes.size} nodes ==========")
         
-        val semaphore = kotlinx.coroutines.sync.Semaphore(16)
+        val semaphore = kotlinx.coroutines.sync.Semaphore(xyz.a202132.app.AppConfig.TCPING_CONCURRENCY)
         val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
         val totalCount = nodes.size
         
@@ -170,7 +170,7 @@ class LatencyTester {
         Log.d(tag, "========== URL Test START: ${nodes.size} nodes (port=$clashApiPort) ==========")
         
         // 并发限制 10，避免ClashAPI过载
-        val semaphore = kotlinx.coroutines.sync.Semaphore(10)
+        val semaphore = kotlinx.coroutines.sync.Semaphore(xyz.a202132.app.AppConfig.URL_TEST_CONCURRENCY)
         val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
         val totalCount = nodes.size
         

@@ -56,7 +56,8 @@ class SpeedTestService {
                 val source = body.source()
                 val buffer = ByteArray(8192)
                 
-                var lastUpdate = 0L
+                var lastBytesRead = 0L
+                var lastUpdate = startTime
                 val updateInterval = 100 // ms
                 var bytesRead: Int = 0
 
@@ -64,17 +65,19 @@ class SpeedTestService {
                     totalBytesRead += bytesRead
 
                     val now = System.currentTimeMillis()
-                    if (now - lastUpdate >= updateInterval) {
-                        val elapsedTotal = now - startTime
-                        if (elapsedTotal > 100) { // minimum 100ms to avoid spike
-                            // Calculate average speed from start to smooth out fluctuations
-                            val currentSpeedMbps = (totalBytesRead * 8f / 1_000_000f) / (elapsedTotal / 1000f)
+                    val timeDelta = now - lastUpdate
+                    if (timeDelta >= updateInterval) {
+                        if (timeDelta > 0) {
+                            val bytesDelta = totalBytesRead - lastBytesRead
+                            // Calculate instantaneous speed
+                            val currentSpeedMbps = (bytesDelta * 8f / 1_000_000f) / (timeDelta / 1000f)
                             if (currentSpeedMbps > peakSpeed) peakSpeed = currentSpeedMbps
                             
                             val progress = totalBytesRead.toFloat() / size.toFloat()
                             onProgress(currentSpeedMbps, progress.coerceIn(0f, 1f))
                         }
                         lastUpdate = now
+                        lastBytesRead = totalBytesRead
                     }
                 }
             }
@@ -110,8 +113,10 @@ class SpeedTestService {
                 // Generate chunk of data to write
                 val buffer = ByteArray(8192) { 1 } // Dummy data
                 var uploaded = 0L
-                var lastUpdate = 0L
+                var lastUpdate = System.currentTimeMillis()
                 val updateInterval = 100 // ms
+
+                var lastUploadedBytes = 0L
 
                 while (!isCancelled && uploaded < size) {
                     val remaining = size - uploaded
@@ -120,16 +125,18 @@ class SpeedTestService {
                     uploaded += toWrite
 
                     val now = System.currentTimeMillis()
-                    if (now - lastUpdate >= updateInterval) {
-                        val elapsedTotal = now - startTime
-                        if (elapsedTotal > 100) {
-                            val currentSpeedMbps = (uploaded * 8f / 1_000_000f) / (elapsedTotal / 1000f)
+                    val timeDelta = now - lastUpdate
+                    if (timeDelta >= updateInterval) {
+                        if (timeDelta > 0) {
+                            val bytesDelta = uploaded - lastUploadedBytes
+                            val currentSpeedMbps = (bytesDelta * 8f / 1_000_000f) / (timeDelta / 1000f)
                             if (currentSpeedMbps > peakSpeed) peakSpeed = currentSpeedMbps
 
                             val progress = uploaded.toFloat() / size.toFloat()
                             onProgress(currentSpeedMbps, progress.coerceIn(0f, 1f))
                         }
                         lastUpdate = now
+                        lastUploadedBytes = uploaded
                     }
                 }
                 finalBytesUploaded = uploaded

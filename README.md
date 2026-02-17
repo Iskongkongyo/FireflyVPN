@@ -157,10 +157,17 @@ object AppConfig {
     const val FEEDBACK_URL = "https://github.com/your-username/your-repo/issues"
     // 项目源码地址（留空则隐藏关于页相关按钮）
     const val GITHUB_URL = "https://github.com/your-username/your-repo"
+    
+    // 延迟测试并发数
+    const val TCPING_CONCURRENCY = 16
+    const val URL_TEST_CONCURRENCY = 10
 
     // 延迟测试 (TCPing & URL Test)
     const val TCPING_TEST_URL = "https://www.google.com/generate_204"
+    const val TCPING_TEST_TIMEOUT = 3000L // 超时默认3秒
+    
     const val URL_TEST_URL = "https://www.google.com/generate_204"
+    const val URL_TEST_TIMEOUT = 5000L // 超时默认5秒
 
     // 速度测试 (Cloudflare)
     const val SPEED_TEST_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
@@ -635,7 +642,7 @@ Release 版本默认移除所有 `android.util.Log` 调用（包括 `Log.d`、`L
     </base-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">your-domain.com</domain>
-        <domain>127.0.0.1</domain>  <!-- URL Test ClashAPI 本地通信 -->
+        <domain includeSubdomains="true">127.0.0.1</domain>  <!-- URL Test ClashAPI 本地通信 -->
     </domain-config>
 </network-security-config>
 ```
