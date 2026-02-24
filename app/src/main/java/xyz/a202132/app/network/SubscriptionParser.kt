@@ -98,14 +98,19 @@ class SubscriptionParser {
      */
     private fun parseNodeLink(link: String): Node? {
         return try {
+            val lowerLink = link.lowercase()
             when {
-                link.startsWith("vless://") -> parseVlessLink(link)
-                link.startsWith("vmess://") -> parseVmessLink(link)
-                link.startsWith("trojan://") -> parseTrojanLink(link)
-                link.startsWith("hysteria2://") || link.startsWith("hy2://") -> parseHysteria2Link(link)
-                link.startsWith("ss://") -> parseShadowsocksLink(link)
-                link.startsWith("socks://") || link.startsWith("socks5://") || link.startsWith("socks4://") -> parseSocksLink(link)
-                link.startsWith("http://") || link.startsWith("https://") -> parseHttpLink(link)
+                lowerLink.startsWith("vless://") -> parseVlessLink(link)
+                lowerLink.startsWith("vmess://") -> parseVmessLink(link)
+                lowerLink.startsWith("trojan://") -> parseTrojanLink(link)
+                lowerLink.startsWith("hysteria2://") || lowerLink.startsWith("hy2://") -> parseHysteria2Link(link)
+                lowerLink.startsWith("anytls://") -> parseAnyTlsLink(link)
+                lowerLink.startsWith("tuic://") -> parseTuicLink(link)
+                lowerLink.startsWith("naive://") || lowerLink.startsWith("naive+https://") -> parseNaiveLink(link)
+                lowerLink.startsWith("wireguard://") -> parseWireGuardLink(link)
+                lowerLink.startsWith("ss://") -> parseShadowsocksLink(link)
+                lowerLink.startsWith("socks://") || lowerLink.startsWith("socks5://") || lowerLink.startsWith("socks4://") -> parseSocksLink(link)
+                lowerLink.startsWith("http://") || lowerLink.startsWith("https://") -> parseHttpLink(link)
                 else -> null
             }
         } catch (e: Exception) {
@@ -192,6 +197,86 @@ class SubscriptionParser {
             id = generateId(link),
             name = name,
             type = NodeType.HYSTERIA2,
+            server = server,
+            port = port,
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
+        )
+    }
+
+    /**
+     * Parse AnyTLS link
+     * Format: anytls://password@host:port?params#name
+     */
+    private fun parseAnyTlsLink(link: String): Node {
+        val uri = Uri.parse(link)
+        val name = URLDecoder.decode(uri.fragment ?: "AnyTLS Node", "UTF-8")
+        val server = uri.host ?: ""
+        val port = if (uri.port == -1) 443 else uri.port
+
+        return Node(
+            id = generateId(link),
+            name = name,
+            type = NodeType.ANYTLS,
+            server = server,
+            port = port,
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
+        )
+    }
+
+    /**
+     * Parse TUIC link
+     * Format: tuic://uuid:password@host:port?params#name
+     */
+    private fun parseTuicLink(link: String): Node {
+        val uri = Uri.parse(link)
+        val name = URLDecoder.decode(uri.fragment ?: "TUIC Node", "UTF-8")
+        val server = uri.host ?: ""
+        val port = if (uri.port == -1) 443 else uri.port
+
+        return Node(
+            id = generateId(link),
+            name = name,
+            type = NodeType.TUIC,
+            server = server,
+            port = port,
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
+        )
+    }
+
+    /**
+     * Parse Naive link
+     * Format: naive+https://username:password@host:port?params#name
+     */
+    private fun parseNaiveLink(link: String): Node {
+        val uri = Uri.parse(link)
+        val name = URLDecoder.decode(uri.fragment ?: "Naive Node", "UTF-8")
+        val server = uri.host ?: ""
+        val port = if (uri.port == -1) 443 else uri.port
+
+        return Node(
+            id = generateId(link),
+            name = name,
+            type = NodeType.NAIVE,
+            server = server,
+            port = port,
+            rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)
+        )
+    }
+
+    /**
+     * Parse WireGuard link
+     * Format: wireguard://private_key@host:port?params#name
+     */
+    private fun parseWireGuardLink(link: String): Node {
+        val uri = Uri.parse(link)
+        val name = URLDecoder.decode(uri.fragment ?: "WireGuard Node", "UTF-8")
+        val server = uri.host ?: ""
+        val port = if (uri.port == -1) 51820 else uri.port
+
+        return Node(
+            id = generateId(link),
+            name = name,
+            type = NodeType.WIREGUARD,
             server = server,
             port = port,
             rawLink = xyz.a202132.app.util.CryptoUtils.encryptForStorage(link)

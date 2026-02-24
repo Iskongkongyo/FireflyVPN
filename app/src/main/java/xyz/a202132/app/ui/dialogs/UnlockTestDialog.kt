@@ -52,6 +52,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import xyz.a202132.app.viewmodel.UnlockNodeResult
 import xyz.a202132.app.viewmodel.UnlockResultStatus
 import xyz.a202132.app.viewmodel.UnlockTestViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun UnlockTestDialog(
@@ -285,6 +288,14 @@ private fun UnlockResultCard(
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = result.summary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (result.testedAt > 0L) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "测试时间: ${formatResultTime(result.testedAt)}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             if (result.rawOutput.isNotBlank()) {
                 Spacer(modifier = Modifier.height(6.dp))
@@ -303,6 +314,10 @@ private fun UnlockResultCard(
 
 private fun buildDetailInfo(result: UnlockNodeResult): String {
     return result.rawOutput.ifBlank { result.summary }
+}
+
+private fun formatResultTime(timestamp: Long): String {
+    return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
 }
 
 @Composable

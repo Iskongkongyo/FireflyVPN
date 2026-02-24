@@ -21,16 +21,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -46,8 +52,20 @@ import xyz.a202132.app.data.model.Node
 fun AutoTestResultDialog(
     nodes: List<Node>,
     onDismiss: () -> Unit,
-    onNodeClick: (Node) -> Unit
+    onNodeClick: (Node) -> Unit,
+    onAutoConnectBest: (() -> Unit)? = null
 ) {
+    var showSearch by remember { mutableStateOf(false) }
+    var keyword by remember { mutableStateOf("") }
+    val filteredNodes = remember(nodes, keyword) {
+        val q = keyword.trim()
+        if (q.isBlank()) nodes else nodes.filter {
+            it.getDisplayName().contains(q, ignoreCase = true) ||
+                it.name.contains(q, ignoreCase = true) ||
+                (it.countryName?.contains(q, ignoreCase = true) == true) ||
+                (it.country?.contains(q, ignoreCase = true) == true)
+        }
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -71,10 +89,15 @@ fun AutoTestResultDialog(
                 ) {
                     Column {
                         Text("自动化测试完成", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        Text("符合要求节点: ${nodes.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("符合要求节点: ${filteredNodes.size}/${nodes.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                    Row {
+                        IconButton(onClick = { showSearch = !showSearch }) {
+                            Icon(Icons.Outlined.Search, contentDescription = "搜索")
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                        }
                     }
                 }
 
@@ -82,16 +105,27 @@ fun AutoTestResultDialog(
                 Divider()
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (nodes.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("没有符合要求的节点", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (showSearch) {
+                    OutlinedTextField(
+                        value = keyword,
+                        onValueChange = { keyword = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("节点名称关键字匹配") }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                if (filteredNodes.isEmpty()) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(if (nodes.isEmpty()) "没有符合要求的节点" else "没有匹配关键字的节点", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(nodes, key = { it.id }) { node ->
+                        items(filteredNodes, key = { it.id }) { node ->
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -129,6 +163,18 @@ fun AutoTestResultDialog(
                         }
                     }
                 }
+
+                if (onAutoConnectBest != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Divider()
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = onAutoConnectBest,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("自动连接最优")
+                    }
+                }
             }
         }
     }
@@ -137,7 +183,8 @@ fun AutoTestResultDialog(
 @Composable
 fun AutoTestDetailDialog(
     node: Node,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onUseNode: (Node) -> Unit
 ) {
     val context = LocalContext.current
     val content = buildDetailText(node)
@@ -199,10 +246,10 @@ fun AutoTestDetailDialog(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     TextButton(
-                        onClick = { copyToClipboard(context, "${node.getDisplayName()} 自动化测试详情", content) },
+                        onClick = { onUseNode(node) },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("复制")
+                        Text("使用该节点")
                     }
                     Button(
                         onClick = onDismiss,
@@ -236,10 +283,4 @@ private fun buildDetailText(node: Node): String {
         appendLine("测试结果:")
         appendLine(node.unlockSummary.ifBlank { "暂无数据" })
     }.trim()
-}
-
-private fun copyToClipboard(context: Context, label: String, text: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
-    Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
 }

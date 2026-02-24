@@ -7,6 +7,10 @@ cmake_minimum_required(VERSION 3.10.2)
 # Declares and names the project.
 project("firefly-vpn")
 
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN YES)
+
 # Creates and names a library, sets it as either STATIC or SHARED, and provides the relative paths to its source code.
 # You can define multiple libraries, and CMake builds them for you.
 # Gradle automatically packages shared libraries with your APK.
@@ -20,6 +24,12 @@ add_library( # Sets the name of the library.
              # Provides a relative path to your source file(s).
              native-lib.cpp )
 
+target_compile_options(native-lib PRIVATE
+        -fvisibility=hidden
+        -fvisibility-inlines-hidden
+        -ffunction-sections
+        -fdata-sections)
+
 # Searches for a specified prebuilt library and stores the path as a variable.
 # Because CMake includes system libraries in the search path by default, you only need to specify the name of the public NDK library you want to add.
 # CMake verifies that the library exists before completing its build.
@@ -31,7 +41,9 @@ find_library( # Sets the name of the path variable.
               log )
 
 # 16 KB page size alignment (required for Android 15+ / Google Play)
-target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
+target_link_options(native-lib PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,--gc-sections")
 
 # Specifies libraries CMake should link to your target library. You can link multiple libraries, such as libraries you define in this build script, prebuilt third-party libraries, or system libraries.
 

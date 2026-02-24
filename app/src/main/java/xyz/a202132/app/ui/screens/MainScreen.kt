@@ -3,6 +3,7 @@ package xyz.a202132.app.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
@@ -29,8 +30,10 @@ import xyz.a202132.app.ui.dialogs.AutoTestResultDialog
 import xyz.a202132.app.ui.dialogs.SpeedTestDialog
 import xyz.a202132.app.ui.dialogs.UnlockTestDialog
 import xyz.a202132.app.ui.theme.*
-import xyz.a202132.app.viewmodel.MainViewModel
 import xyz.a202132.app.viewmodel.AutoTestStage
+import xyz.a202132.app.viewmodel.BestNodePriority
+import xyz.a202132.app.viewmodel.MainViewModel
+import xyz.a202132.app.viewmodel.TestPreferMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +61,7 @@ fun MainScreen(
     val noticeConfig by viewModel.noticeConfig.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
     val error by viewModel.error.collectAsState()
+    val infoDialogMessage by viewModel.infoDialogMessage.collectAsState()
     val isAutoSelecting by viewModel.isAutoSelecting.collectAsState()
     val isUserAgreementAccepted by viewModel.isUserAgreementAccepted.collectAsState()
     
@@ -68,6 +72,8 @@ fun MainScreen(
     var showAutoTestResultDialog by remember { mutableStateOf(false) }
     var nodeAutoTestDetail by remember { mutableStateOf<Node?>(null) }
     var autoTestWasRunning by remember { mutableStateOf(false) }
+    var showQuickModePicker by remember { mutableStateOf(false) }
+    var showTestPreferPanelPage by remember { mutableStateOf(false) }
     
     // 流量统计
     val uploadSpeed by viewModel.uploadSpeed.collectAsState()
@@ -87,14 +93,23 @@ fun MainScreen(
     // 自动化测试设置/状态
     val autoTestEnabled by viewModel.autoTestEnabled.collectAsState()
     val autoTestFilterUnavailable by viewModel.autoTestFilterUnavailable.collectAsState()
+    val autoTestLatencyEnabled by viewModel.autoTestLatencyEnabled.collectAsState()
+    val autoTestLatencyMode by viewModel.autoTestLatencyMode.collectAsState()
     val autoTestLatencyThresholdMs by viewModel.autoTestLatencyThresholdMs.collectAsState()
     val autoTestBandwidthEnabled by viewModel.autoTestBandwidthEnabled.collectAsState()
-    val autoTestBandwidthThresholdMbps by viewModel.autoTestBandwidthThresholdMbps.collectAsState()
+    val autoTestBandwidthDownloadEnabled by viewModel.autoTestBandwidthDownloadEnabled.collectAsState()
+    val autoTestBandwidthUploadEnabled by viewModel.autoTestBandwidthUploadEnabled.collectAsState()
+    val autoTestBandwidthDownloadThresholdMbps by viewModel.autoTestBandwidthDownloadThresholdMbps.collectAsState()
+    val autoTestBandwidthUploadThresholdMbps by viewModel.autoTestBandwidthUploadThresholdMbps.collectAsState()
     val autoTestBandwidthWifiOnly by viewModel.autoTestBandwidthWifiOnly.collectAsState()
-    val autoTestBandwidthSizeMb by viewModel.autoTestBandwidthSizeMb.collectAsState()
+    val autoTestBandwidthDownloadSizeMb by viewModel.autoTestBandwidthDownloadSizeMb.collectAsState()
+    val autoTestBandwidthUploadSizeMb by viewModel.autoTestBandwidthUploadSizeMb.collectAsState()
     val autoTestUnlockEnabled by viewModel.autoTestUnlockEnabled.collectAsState()
+    val autoTestByRegion by viewModel.autoTestByRegion.collectAsState()
     val autoTestNodeLimit by viewModel.autoTestNodeLimit.collectAsState()
     val autoTestProgress by viewModel.autoTestProgress.collectAsState()
+    val preferTestModes by viewModel.preferTestModes.collectAsState()
+    val preferTestSelectedModeId by viewModel.preferTestSelectedModeId.collectAsState()
     // val showBackupFailedDialog by viewModel.showBackupFailedDialog.collectAsState() // Removed
     
     // Show error toast
@@ -120,7 +135,7 @@ fun MainScreen(
         }
         autoTestWasRunning = autoTestProgress.running
     }
-    
+
     // Drawer
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -131,6 +146,7 @@ fun MainScreen(
                 DrawerContent(
                     onCheckUpdate = { viewModel.checkUpdate() },
                     onOpenPerAppProxy = onOpenPerAppProxy,
+                    onOpenTestPreferPanel = { showTestPreferPanelPage = true },
                     bypassLan = bypassLan,
                     onToggleBypassLan = { viewModel.setBypassLan(it) },
                     ipv6RoutingMode = ipv6RoutingMode,
@@ -140,23 +156,45 @@ fun MainScreen(
                     onToggleBackupNode = { viewModel.setBackupNodeEnabled(it) },
                     autoTestEnabled = autoTestEnabled,
                     autoTestFilterUnavailable = autoTestFilterUnavailable,
+                    autoTestLatencyEnabled = autoTestLatencyEnabled,
+                    autoTestLatencyMode = autoTestLatencyMode,
                     autoTestLatencyThresholdMs = autoTestLatencyThresholdMs,
                     autoTestBandwidthEnabled = autoTestBandwidthEnabled,
-                    autoTestBandwidthThresholdMbps = autoTestBandwidthThresholdMbps,
+                    autoTestBandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled,
+                    autoTestBandwidthUploadEnabled = autoTestBandwidthUploadEnabled,
+                    autoTestBandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps,
+                    autoTestBandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps,
                     autoTestBandwidthWifiOnly = autoTestBandwidthWifiOnly,
-                    autoTestBandwidthSizeMb = autoTestBandwidthSizeMb,
+                    autoTestBandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb,
+                    autoTestBandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb,
                     autoTestUnlockEnabled = autoTestUnlockEnabled,
+                    autoTestByRegion = autoTestByRegion,
                     autoTestNodeLimit = autoTestNodeLimit,
                     autoTestProgress = autoTestProgress,
+                    preferTestModes = preferTestModes,
+                    preferTestSelectedModeId = preferTestSelectedModeId,
                     onSetAutoTestEnabled = { viewModel.setAutoTestEnabled(it) },
                     onSetAutoTestFilterUnavailable = { viewModel.setAutoTestFilterUnavailable(it) },
+                    onSetAutoTestLatencyEnabled = { viewModel.setAutoTestLatencyEnabled(it) },
+                    onSetAutoTestLatencyMode = { viewModel.setAutoTestLatencyMode(it) },
                     onSetAutoTestLatencyThresholdMs = { viewModel.setAutoTestLatencyThresholdMs(it) },
                     onSetAutoTestBandwidthEnabled = { viewModel.setAutoTestBandwidthEnabled(it) },
-                    onSetAutoTestBandwidthThresholdMbps = { viewModel.setAutoTestBandwidthThresholdMbps(it) },
+                    onSetAutoTestBandwidthDownloadEnabled = { viewModel.setAutoTestBandwidthDownloadEnabled(it) },
+                    onSetAutoTestBandwidthUploadEnabled = { viewModel.setAutoTestBandwidthUploadEnabled(it) },
+                    onSetAutoTestBandwidthDownloadThresholdMbps = { viewModel.setAutoTestBandwidthDownloadThresholdMbps(it) },
+                    onSetAutoTestBandwidthUploadThresholdMbps = { viewModel.setAutoTestBandwidthUploadThresholdMbps(it) },
                     onSetAutoTestBandwidthWifiOnly = { viewModel.setAutoTestBandwidthWifiOnly(it) },
-                    onSetAutoTestBandwidthSizeMb = { viewModel.setAutoTestBandwidthSizeMb(it) },
+                    onSetAutoTestBandwidthDownloadSizeMb = { viewModel.setAutoTestBandwidthDownloadSizeMb(it) },
+                    onSetAutoTestBandwidthUploadSizeMb = { viewModel.setAutoTestBandwidthUploadSizeMb(it) },
                     onSetAutoTestUnlockEnabled = { viewModel.setAutoTestUnlockEnabled(it) },
+                    onSetAutoTestByRegion = { viewModel.setAutoTestByRegion(it) },
                     onSetAutoTestNodeLimit = { viewModel.setAutoTestNodeLimit(it) },
+                    onApplyPreferTestMode = { viewModel.applyPreferTestMode(it) },
+                    onSaveCurrentPreferTestMode = { viewModel.saveCurrentPreferTestMode(it) },
+                    onDeleteCurrentPreferTestMode = { viewModel.deleteCurrentPreferTestMode() },
+                    onHideUnqualifiedAutoTestNodes = { viewModel.hideUnqualifiedAutoTestNodes() },
+                    onSelectBestNodeByPriority = { priority, connect -> viewModel.selectBestNodeByPriority(priority, connect) },
+                    onUpdateCurrentPreferModePriority = { viewModel.updateCurrentPreferModePriority(it) },
                     onStartAutomatedTest = { viewModel.startAutomatedTest() },
                     onCancelAutomatedTest = { viewModel.cancelAutomatedTest() },
                     onClose = { scope.launch { drawerState.close() } }
@@ -322,10 +360,7 @@ fun MainScreen(
                     vpnState = vpnState,
                     onClick = {
                         if (currentNode == null) {
-                            // 自动选择并连接 (需授权)
-                            onStartVpn {
-                                viewModel.startAutoSelectAndConnect()
-                            }
+                            showQuickModePicker = true
                         } else {
                             // 手动连接 (需授权)
                             onStartVpn {
@@ -333,7 +368,7 @@ fun MainScreen(
                             }
                         }
                     },
-                    customLabel = if (currentNode == null && vpnState == VpnState.DISCONNECTED) "点击自动选择节点连接" else null
+                    customLabel = if (currentNode == null && vpnState == VpnState.DISCONNECTED) "点击选择测试模式后自动择优连接" else null
                 )
                 
                 // 流量统计 (仅在连接时显示)
@@ -385,17 +420,112 @@ fun MainScreen(
 
     if (showAutoTestResultDialog) {
         val qualifiedNodes = nodes.filter { it.autoTestedAt > 0 && it.isAvailable }
+        val currentPreferMode = preferTestModes.firstOrNull { it.id == preferTestSelectedModeId }
+        val currentPriority = currentPreferMode?.defaultPriority ?: BestNodePriority.LATENCY
         AutoTestResultDialog(
             nodes = qualifiedNodes,
             onDismiss = { showAutoTestResultDialog = false },
-            onNodeClick = { node -> nodeAutoTestDetail = node }
+            onNodeClick = { node -> nodeAutoTestDetail = node },
+            onAutoConnectBest = {
+                onStartVpn {
+                    viewModel.selectBestNodeByPriority(currentPriority, true)
+                }
+            }
+        )
+    }
+
+    infoDialogMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { viewModel.clearInfoDialogMessage() },
+            title = { Text("提示") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.clearInfoDialogMessage() }) {
+                    Text("知道了")
+                }
+            }
+        )
+    }
+
+    if (showQuickModePicker) {
+        QuickModePickerDialog(
+            modes = preferTestModes,
+            selectedModeId = preferTestSelectedModeId,
+            onDismiss = { showQuickModePicker = false },
+            onConfirm = { modeId ->
+                showQuickModePicker = false
+                onStartVpn { viewModel.startPreferModeAutoSelectAndConnect(modeId) }
+            }
+        )
+    }
+
+    if (showTestPreferPanelPage) {
+        TestPreferPanelDialog(
+            autoTestEnabled = autoTestEnabled,
+            autoTestFilterUnavailable = autoTestFilterUnavailable,
+            autoTestLatencyEnabled = autoTestLatencyEnabled,
+            autoTestLatencyMode = autoTestLatencyMode,
+            autoTestLatencyThresholdMs = autoTestLatencyThresholdMs,
+            autoTestBandwidthEnabled = autoTestBandwidthEnabled,
+            autoTestBandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled,
+            autoTestBandwidthUploadEnabled = autoTestBandwidthUploadEnabled,
+            autoTestBandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps,
+            autoTestBandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps,
+            autoTestBandwidthWifiOnly = autoTestBandwidthWifiOnly,
+            autoTestBandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb,
+            autoTestBandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb,
+            autoTestUnlockEnabled = autoTestUnlockEnabled,
+            autoTestByRegion = autoTestByRegion,
+            autoTestNodeLimit = autoTestNodeLimit,
+            autoTestProgress = autoTestProgress,
+            preferTestModes = preferTestModes,
+            preferTestSelectedModeId = preferTestSelectedModeId,
+            onSetAutoTestEnabled = { viewModel.setAutoTestEnabled(it) },
+            onSetAutoTestFilterUnavailable = { viewModel.setAutoTestFilterUnavailable(it) },
+            onSetAutoTestLatencyEnabled = { viewModel.setAutoTestLatencyEnabled(it) },
+            onSetAutoTestLatencyMode = { viewModel.setAutoTestLatencyMode(it) },
+            onSetAutoTestLatencyThresholdMs = { viewModel.setAutoTestLatencyThresholdMs(it) },
+            onSetAutoTestBandwidthEnabled = { viewModel.setAutoTestBandwidthEnabled(it) },
+            onSetAutoTestBandwidthDownloadEnabled = { viewModel.setAutoTestBandwidthDownloadEnabled(it) },
+            onSetAutoTestBandwidthUploadEnabled = { viewModel.setAutoTestBandwidthUploadEnabled(it) },
+            onSetAutoTestBandwidthDownloadThresholdMbps = { viewModel.setAutoTestBandwidthDownloadThresholdMbps(it) },
+            onSetAutoTestBandwidthUploadThresholdMbps = { viewModel.setAutoTestBandwidthUploadThresholdMbps(it) },
+            onSetAutoTestBandwidthWifiOnly = { viewModel.setAutoTestBandwidthWifiOnly(it) },
+            onSetAutoTestBandwidthDownloadSizeMb = { viewModel.setAutoTestBandwidthDownloadSizeMb(it) },
+            onSetAutoTestBandwidthUploadSizeMb = { viewModel.setAutoTestBandwidthUploadSizeMb(it) },
+            onSetAutoTestUnlockEnabled = { viewModel.setAutoTestUnlockEnabled(it) },
+            onSetAutoTestByRegion = { viewModel.setAutoTestByRegion(it) },
+            onSetAutoTestNodeLimit = { viewModel.setAutoTestNodeLimit(it) },
+            onApplyPreferTestMode = { viewModel.applyPreferTestMode(it) },
+            onCreatePreferTestMode = { viewModel.createPreferTestModeFromCurrent() },
+            onSaveCurrentPreferTestMode = { viewModel.saveCurrentPreferTestMode(it) },
+            onDeleteCurrentPreferTestMode = { viewModel.deleteCurrentPreferTestMode() },
+            onHideUnqualifiedAutoTestNodes = { viewModel.hideUnqualifiedAutoTestNodes() },
+            onSelectBestNodeByPriority = { priority, connect ->
+                if (connect) {
+                    onStartVpn { viewModel.selectBestNodeByPriority(priority, true) }
+                } else {
+                    viewModel.selectBestNodeByPriority(priority, false)
+                }
+            },
+            onUpdateCurrentPreferModePriority = { viewModel.updateCurrentPreferModePriority(it) },
+            onUpdateCurrentPreferModeUnlockPriority = { mode, siteIds ->
+                viewModel.updateCurrentPreferModeUnlockPriority(mode, siteIds)
+            },
+            onStartAutomatedTest = { onStartVpn { viewModel.startAutomatedTest() } },
+            onCancelAutomatedTest = { viewModel.cancelAutomatedTest() },
+            onDismiss = { showTestPreferPanelPage = false }
         )
     }
 
     nodeAutoTestDetail?.let { node ->
         AutoTestDetailDialog(
             node = node,
-            onDismiss = { nodeAutoTestDetail = null }
+            onDismiss = { nodeAutoTestDetail = null },
+            onUseNode = {
+                viewModel.selectNode(node)
+                nodeAutoTestDetail = null
+            }
         )
     }
     
@@ -440,7 +570,18 @@ fun MainScreen(
     
     // 自动选择弹窗 (Blocking)
     if (isAutoSelecting) {
-        LoadingDialog(message = "正在选择最优节点中")
+        LoadingDialog(
+            message = buildString {
+                append("正在选择最优节点中...")
+                if (autoTestProgress.running) {
+                    val detail = autoTestProgress.message.ifBlank { autoTestProgress.stage.name }
+                    if (detail.isNotBlank()) {
+                        append("\n")
+                        append(detail)
+                    }
+                }
+            }
+        )
     }
     
     // 下载状态监听
@@ -581,4 +722,86 @@ fun MainScreen(
             onDisagree = { (context as? android.app.Activity)?.finish() }
         )
     }
+}
+
+@Composable
+private fun QuickModePickerDialog(
+    modes: List<TestPreferMode>,
+    selectedModeId: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var localSelectedId by remember(selectedModeId, modes) {
+        mutableStateOf(
+            modes.firstOrNull { it.id == selectedModeId }?.id
+                ?: modes.firstOrNull()?.id
+                ?: ""
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择测试模式") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "执行后会按该模式测试并自动选择最优节点连接",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                modes.forEach { mode ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { localSelectedId = mode.id },
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (localSelectedId == mode.id) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = mode.name,
+                                color = if (localSelectedId == mode.id) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
+                            if (mode.builtIn) {
+                                Text(
+                                    text = "内置",
+                                    fontSize = 11.sp,
+                                    color = if (localSelectedId == mode.id) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (localSelectedId.isNotBlank()) onConfirm(localSelectedId) },
+                enabled = localSelectedId.isNotBlank()
+            ) {
+                Text("开始")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }

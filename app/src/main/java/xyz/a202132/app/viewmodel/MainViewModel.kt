@@ -1,4 +1,4 @@
-package xyz.a202132.app.viewmodel
+﻿package xyz.a202132.app.viewmodel
 
 import android.app.Application
 import android.content.Intent
@@ -7,15 +7,24 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okio.BufferedSink
 import xyz.a202132.app.AppConfig
 import xyz.a202132.app.BuildConfig
+import xyz.a202132.app.UnlockPrioritySite
 import xyz.a202132.app.data.local.AppDatabase
 import xyz.a202132.app.data.model.*
 import xyz.a202132.app.data.repository.SettingsRepository
@@ -32,7 +41,9 @@ import xyz.a202132.app.util.CryptoUtils
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
@@ -80,6 +91,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _error = MutableStateFlow<String?>(null)
 
     val error = _error.asStateFlow()
+    private val _infoDialogMessage = MutableStateFlow<String?>(null)
+    val infoDialogMessage = _infoDialogMessage.asStateFlow()
     
     // Blocking Auto-Select State
     private val _isAutoSelecting = MutableStateFlow(false)
@@ -95,7 +108,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         nodeDao.getAllNodes(),
         _filterUnavailable
     ) { list, filterOut ->
-        val filtered = if (filterOut) list.filter { it.latency != -2 } else list
+        val filtered = if (filterOut) list.filterNot { shouldHideByQuickCleanup(it) } else list
         filtered.sortedWith(
             compareByDescending<Node> { it.isAvailable }
                 .thenBy { it.sortOrder }
@@ -149,13 +162,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 自动化测试设置
     val autoTestEnabled = settingsRepository.autoTestEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
     val autoTestFilterUnavailable = settingsRepository.autoTestFilterUnavailable.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val autoTestLatencyEnabled = settingsRepository.autoTestLatencyEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val autoTestLatencyMode = settingsRepository.autoTestLatencyMode.stateIn(viewModelScope, SharingStarted.Lazily, AutoTestLatencyMode.URL_TEST)
     val autoTestLatencyThresholdMs = settingsRepository.autoTestLatencyThresholdMs.stateIn(viewModelScope, SharingStarted.Lazily, 600)
     val autoTestBandwidthEnabled = settingsRepository.autoTestBandwidthEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
-    val autoTestBandwidthThresholdMbps = settingsRepository.autoTestBandwidthThresholdMbps.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestBandwidthDownloadEnabled = settingsRepository.autoTestBandwidthDownloadEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val autoTestBandwidthUploadEnabled = settingsRepository.autoTestBandwidthUploadEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+    val autoTestBandwidthDownloadThresholdMbps = settingsRepository.autoTestBandwidthDownloadThresholdMbps.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestBandwidthUploadThresholdMbps = settingsRepository.autoTestBandwidthUploadThresholdMbps.stateIn(viewModelScope, SharingStarted.Lazily, 10)
     val autoTestBandwidthWifiOnly = settingsRepository.autoTestBandwidthWifiOnly.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    val autoTestBandwidthSizeMb = settingsRepository.autoTestBandwidthSizeMb.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestBandwidthDownloadSizeMb = settingsRepository.autoTestBandwidthDownloadSizeMb.stateIn(viewModelScope, SharingStarted.Lazily, 10)
+    val autoTestBandwidthUploadSizeMb = settingsRepository.autoTestBandwidthUploadSizeMb.stateIn(viewModelScope, SharingStarted.Lazily, 10)
     val autoTestUnlockEnabled = settingsRepository.autoTestUnlockEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+    val autoTestByRegion = settingsRepository.autoTestByRegion.stateIn(viewModelScope, SharingStarted.Lazily, false)
     val autoTestNodeLimit = settingsRepository.autoTestNodeLimit.stateIn(viewModelScope, SharingStarted.Lazily, 20)
+    val preferTestModes = settingsRepository.preferTestModes.stateIn(viewModelScope, SharingStarted.Lazily, builtInPreferTestModes())
+    val preferTestSelectedModeId = settingsRepository.preferTestSelectedModeId.stateIn(viewModelScope, SharingStarted.Lazily, BUILTIN_PREFER_MODE_CHAT)
     
     val vpnState = ServiceManager.vpnState
     
@@ -190,6 +212,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (accepted) {
                     val autoEnabled = settingsRepository.autoTestEnabled.first()
                     if (autoEnabled) {
+                        val selectedModeId = settingsRepository.preferTestSelectedModeId.first()
+                        val modeName = settingsRepository.preferTestModes.first()
+                            .firstOrNull { it.id == selectedModeId }
+                            ?.name
+                            ?: "当前模式"
+                        _error.value = "APP启动后已自动执行${modeName}测试"
                         startAutomatedTest()
                     } else {
                         fetchNodes(bypassThrottle = true)
@@ -346,8 +374,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     // 保存到数据库
-                    nodeDao.deleteAllNodes()
-                    nodeDao.insertNodes(fetchedNodes)
+                    nodeDao.replaceAllNodes(fetchedNodes)
 
                     if (BuildConfig.DEBUG) {
                         viewModelScope.launch(Dispatchers.IO) {
@@ -577,12 +604,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 
                 // 更新数据库
                 results.forEach { result ->
-                    nodeDao.updateLatency(
+                    val updatedRows = nodeDao.updateLatency(
                         nodeId = result.nodeId,
                         latency = result.latency,
                         isAvailable = result.isAvailable,
                         testedAt = System.currentTimeMillis()
                     )
+                    if (updatedRows == 0) {
+                        Log.w(tag, "URL Test result not applied, node not found in DB: ${result.nodeId}")
+                    }
                 }
             } finally {
                 // 读取 sing-box 核心日志
@@ -624,13 +654,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 清理不可用节点 (UI 过滤，不删除数据库)
      */
     fun cleanUnavailableNodes() {
-        val hiddenCount = nodes.value.count { it.latency == -2 || !it.isAvailable }
+        val hiddenCount = nodes.value.count { shouldHideByQuickCleanup(it) }
         if (hiddenCount > 0) {
             _filterUnavailable.value = true
             _error.value = "已隐藏 $hiddenCount 个超时/不可用节点"
         } else {
             _error.value = "没有需要清理的超时/不可用节点"
         }
+    }
+
+    private fun shouldHideByQuickCleanup(node: Node): Boolean {
+        return node.autoTestStatus.contains("FILTERED", ignoreCase = true) ||
+            node.autoTestStatus.contains("FAILED", ignoreCase = true) ||
+            node.latency == -2 ||
+            !node.isAvailable
     }
 
     /**
@@ -665,63 +702,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * (Blocking UI Flow)
      */
     fun startAutoSelectAndConnect() {
+        startPreferModeAutoSelectAndConnect(BUILTIN_PREFER_MODE_CHAT)
+    }
+
+    fun startPreferModeAutoSelectAndConnect(modeId: String) {
         viewModelScope.launch {
-            if (_isAutoSelecting.value || _isTesting.value) return@launch
-            
+            if (_autoTestProgress.value.running || _isTesting.value) {
+                _error.value = "测试正在进行中"
+                return@launch
+            }
+            val mode = preferTestModes.value.firstOrNull { it.id == modeId }
+            if (mode == null) {
+                _error.value = "未找到测试模式"
+                return@launch
+            }
+            settingsRepository.setPreferTestSelectedModeId(modeId)
             _isAutoSelecting.value = true
-            try {
-                Log.i(tag, "Starting Auto-Select and Connect Flow")
-                
-                // 1. 获取所有节点
-                val allNodes = nodes.value
-                if (allNodes.isEmpty()) {
-                    _error.value = "没有可用节点"
-                    return@launch
-                }
-                
-                // 2. 强制重新测试所有节点延迟 (使用 URL Test，因为用户偏好真实连通性)
-                // 注意：如果 VPN 未连接，这会启动临时无头实例，耗时较长 (2-3s)
-                urlTestAllNodes(allNodes)
-                
-                // 等待测试完成 (urlTestAllNodes 是异步开启的，但 updateLatency 是同步写入数据库的)
-                // 这里需要一种机制等待测试结束或者轮询数据库
-                // 由于 urlTestAllNodes 在 viewModelScope.launch 中开启了另一个 launch (fire-and-forget for UI), 
-                // 我们需要将其改为 suspend 或者等待 _isTesting 变回 false
-                
-                // 简单的做法：等待 _isTesting 变为 true (如果还没变)，然后等待它变为 false
-                delay(500) // 等待测试启动
-                while (_isTesting.value) {
-                    delay(500)
-                }
-                
-                // 3. 寻找最佳节点 (latency > 0)
-                // 重新从数据库获取最新状态 (或者 internalTestNodes 返回结果，这里直接查库更保险)
-                val updatedNodes = nodeDao.getAllNodes().first()
-                val bestNode = updatedNodes.filter { it.latency > 0 }.minByOrNull { it.latency }
-                
-                if (bestNode != null) {
-                    Log.i(tag, "Found best node: ${bestNode.name} (${bestNode.latency}ms)")
-                    
-                    // 4. 设置选中节点
-                    settingsRepository.setSelectedNodeId(bestNode.id)
-                    delay(500) // 稍微等待状态更新
-                    
-                    // 5. 启动连接
-                    // 注意：这里我们手动调用 startVpn，并传入刚才选中的节点
-                    // ServiceManager.startVpn 需要 Context，ViewModel 有 Application
-                    ServiceManager.startVpn(getApplication(), bestNode, proxyMode.value)
-                    
-                } else {
-                    _error.value = "无法连接所有节点，请检查网络"
-                }
-                
-            } catch (e: Exception) {
-                Log.e(tag, "Auto-select failed", e)
-                _error.value = "自动选择失败: ${e.message}"
-            } finally {
-                _isAutoSelecting.value = false
+            startAutomatedTest(
+                preferPriority = mode.defaultPriority,
+                connectBestAfterDone = true,
+                configOverride = mode.toAutoTestConfig(autoRunEnabled = autoTestEnabled.value)
+            )
+        }
+    }
+
+    fun selectBestNodeByPriority(priority: BestNodePriority, connect: Boolean) {
+        viewModelScope.launch {
+            val currentMode = preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
+            if (currentMode == null) {
+                _error.value = "当前模式不存在，请重新选择模式"
+                return@launch
+            }
+            if (!isPrioritySupportedByMode(priority, currentMode)) {
+                _infoDialogMessage.value = "当前模式未启用${priorityDisplayName(priority)}相关测试。\n\n已保存该择优规则，请先调整模式配置或执行一次测试后再自动选择连接最优。"
+                return@launch
+            }
+
+            val dbNodes = nodeDao.getAllNodes().first()
+            val candidates = dbNodes
+                .filter { it.isAvailable }
+                .let { filterPriorityReadyCandidates(it, priority) }
+
+            if (candidates.isEmpty()) {
+                _infoDialogMessage.value = "已保存${priorityDisplayName(priority)}优先规则。\n\n当前模式还没有对应测试结果，请先点击“开始测试”，完成后再自动选择连接最优。"
+                return@launch
+            }
+
+            val best = pickBestNode(candidates, priority, currentMode)
+            if (best == null) {
+                _error.value = "没有可用于${priorityDisplayName(priority)}择优的节点"
+                return@launch
+            }
+            settingsRepository.setSelectedNodeId(best.id)
+            if (connect) {
+                ServiceManager.startVpn(getApplication(), best, proxyMode.value)
+            }
+            _error.value = if (connect) "已连接最优节点：${best.getDisplayName()}" else "已选择最优节点：${best.getDisplayName()}"
+        }
+    }
+
+    private fun isPrioritySupportedByMode(priority: BestNodePriority, mode: TestPreferMode): Boolean {
+        return when (priority) {
+            BestNodePriority.LATENCY -> mode.latencyEnabled
+            BestNodePriority.UPLOAD -> mode.bandwidthEnabled && mode.bandwidthUploadEnabled
+            BestNodePriority.DOWNLOAD -> mode.bandwidthEnabled && mode.bandwidthDownloadEnabled
+            BestNodePriority.UNLOCK_COUNT -> mode.unlockEnabled
+        }
+    }
+
+    private fun filterPriorityReadyCandidates(nodes: List<Node>, priority: BestNodePriority): List<Node> {
+        return when (priority) {
+            BestNodePriority.LATENCY -> nodes.filter { it.autoTestedAt > 0L && it.latency > 0 }
+            BestNodePriority.UPLOAD -> nodes.filter { it.autoTestedAt > 0L && it.uploadMbps > 0f }
+            BestNodePriority.DOWNLOAD -> nodes.filter { it.autoTestedAt > 0L && it.downloadMbps > 0f }
+            BestNodePriority.UNLOCK_COUNT -> nodes.filter {
+                it.autoTestedAt > 0L && (
+                    it.unlockSummary.isNotBlank() || it.unlockPassed
+                )
             }
         }
+    }
+
+    private fun priorityDisplayName(priority: BestNodePriority): String = when (priority) {
+        BestNodePriority.LATENCY -> "延迟"
+        BestNodePriority.UPLOAD -> "上行"
+        BestNodePriority.DOWNLOAD -> "下行"
+        BestNodePriority.UNLOCK_COUNT -> "解锁情况"
+    }
+
+    fun hideUnqualifiedAutoTestNodes() {
+        val failed = nodes.value.count {
+            it.autoTestedAt > 0L && (
+                it.autoTestStatus.contains("FILTERED", ignoreCase = true) ||
+                    it.autoTestStatus.contains("FAILED", ignoreCase = true) ||
+                    !it.isAvailable
+                )
+        }
+        if (failed <= 0) {
+            _error.value = "没有未达标节点"
+            return
+        }
+        _filterUnavailable.value = true
+        _error.value = "已移除未达标节点（已隐藏 $failed 个）"
     }
     
     /**
@@ -1017,6 +1099,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearError() {
         _error.value = null
     }
+
+    fun clearInfoDialogMessage() {
+        _infoDialogMessage.value = null
+    }
     
     fun acceptUserAgreement() {
         viewModelScope.launch {
@@ -1033,6 +1119,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settingsRepository.setAutoTestFilterUnavailable(enabled) }
     }
 
+    fun setAutoTestLatencyEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestLatencyEnabled(enabled) }
+    }
+
+    fun setAutoTestLatencyMode(mode: AutoTestLatencyMode) {
+        viewModelScope.launch { settingsRepository.setAutoTestLatencyMode(mode) }
+    }
+
     fun setAutoTestLatencyThresholdMs(value: Int) {
         viewModelScope.launch { settingsRepository.setAutoTestLatencyThresholdMs(value) }
     }
@@ -1041,38 +1135,220 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthEnabled(enabled) }
     }
 
-    fun setAutoTestBandwidthThresholdMbps(value: Int) {
-        viewModelScope.launch { settingsRepository.setAutoTestBandwidthThresholdMbps(value) }
+    fun setAutoTestBandwidthDownloadEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadEnabled(enabled) }
+    }
+
+    fun setAutoTestBandwidthUploadEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadEnabled(enabled) }
+    }
+
+    fun setAutoTestBandwidthDownloadThresholdMbps(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadThresholdMbps(value) }
+    }
+
+    fun setAutoTestBandwidthUploadThresholdMbps(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadThresholdMbps(value) }
     }
 
     fun setAutoTestBandwidthWifiOnly(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthWifiOnly(enabled) }
     }
 
-    fun setAutoTestBandwidthSizeMb(value: Int) {
-        viewModelScope.launch { settingsRepository.setAutoTestBandwidthSizeMb(value) }
+    fun setAutoTestBandwidthDownloadSizeMb(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadSizeMb(value) }
+    }
+
+    fun setAutoTestBandwidthUploadSizeMb(value: Int) {
+        viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadSizeMb(value) }
     }
 
     fun setAutoTestUnlockEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAutoTestUnlockEnabled(enabled) }
     }
 
+    fun setAutoTestByRegion(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoTestByRegion(enabled) }
+    }
+
     fun setAutoTestNodeLimit(value: Int) {
         viewModelScope.launch { settingsRepository.setAutoTestNodeLimit(value) }
     }
 
-    fun startAutomatedTest() {
+    fun applyPreferTestMode(modeId: String) {
+        viewModelScope.launch {
+            val mode = preferTestModes.value.firstOrNull { it.id == modeId } ?: return@launch
+            settingsRepository.setPreferTestSelectedModeId(mode.id)
+            settingsRepository.setAutoTestFilterUnavailable(mode.filterUnavailable)
+            settingsRepository.setAutoTestLatencyEnabled(mode.latencyEnabled)
+            settingsRepository.setAutoTestLatencyMode(mode.latencyMode)
+            settingsRepository.setAutoTestLatencyThresholdMs(mode.latencyThresholdMs)
+            settingsRepository.setAutoTestBandwidthEnabled(mode.bandwidthEnabled)
+            settingsRepository.setAutoTestBandwidthDownloadEnabled(mode.bandwidthDownloadEnabled)
+            settingsRepository.setAutoTestBandwidthUploadEnabled(mode.bandwidthUploadEnabled)
+            settingsRepository.setAutoTestBandwidthDownloadThresholdMbps(mode.bandwidthDownloadThresholdMbps)
+            settingsRepository.setAutoTestBandwidthUploadThresholdMbps(mode.bandwidthUploadThresholdMbps)
+            settingsRepository.setAutoTestBandwidthWifiOnly(mode.bandwidthWifiOnly)
+            settingsRepository.setAutoTestBandwidthDownloadSizeMb(mode.bandwidthDownloadSizeMb)
+            settingsRepository.setAutoTestBandwidthUploadSizeMb(mode.bandwidthUploadSizeMb)
+            settingsRepository.setAutoTestUnlockEnabled(mode.unlockEnabled)
+            settingsRepository.setAutoTestByRegion(mode.byRegion)
+            settingsRepository.setAutoTestNodeLimit(mode.nodeLimit)
+        }
+    }
+
+    fun saveCurrentPreferTestMode(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            _error.value = "模式名称不能为空"
+            return
+        }
+        viewModelScope.launch {
+            val existing = preferTestModes.value
+            val selectedId = preferTestSelectedModeId.value
+            val selectedMode = existing.firstOrNull { it.id == selectedId }
+            val modeId = if (selectedMode != null && !selectedMode.builtIn) selectedMode.id else "custom_${UUID.randomUUID()}"
+            val newMode = TestPreferMode(
+                id = modeId,
+                name = trimmed,
+                builtIn = false,
+                filterUnavailable = autoTestFilterUnavailable.value,
+                latencyEnabled = autoTestLatencyEnabled.value,
+                latencyMode = autoTestLatencyMode.value,
+                latencyThresholdMs = autoTestLatencyThresholdMs.value,
+                bandwidthEnabled = autoTestBandwidthEnabled.value,
+                bandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled.value,
+                bandwidthUploadEnabled = autoTestBandwidthUploadEnabled.value,
+                bandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps.value,
+                bandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps.value,
+                bandwidthWifiOnly = autoTestBandwidthWifiOnly.value,
+                bandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb.value,
+                bandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb.value,
+                unlockEnabled = autoTestUnlockEnabled.value,
+                byRegion = autoTestByRegion.value,
+                nodeLimit = autoTestNodeLimit.value,
+                defaultPriority = selectedMode?.defaultPriority ?: BestNodePriority.LATENCY,
+                unlockPriorityMode = selectedMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
+                unlockPriorityTargetSiteIds = selectedMode?.unlockPriorityTargetSiteIds ?: emptyList()
+            )
+            val updated = existing.filterNot { it.id == modeId || (!it.builtIn && it.name == trimmed) } + newMode
+            settingsRepository.setPreferTestModes(updated)
+            settingsRepository.setPreferTestSelectedModeId(newMode.id)
+            _error.value = "已保存模式：${newMode.name}"
+        }
+    }
+
+    fun createPreferTestModeFromCurrent() {
+        viewModelScope.launch {
+            val existing = preferTestModes.value
+            val currentId = preferTestSelectedModeId.value
+            val currentMode = existing.firstOrNull { it.id == currentId }
+            val usedNames = existing.map { it.name }.toSet()
+            val baseName = "新模式"
+            var index = 1
+            var candidateName = baseName
+            while (candidateName in usedNames) {
+                index++
+                candidateName = "$baseName $index"
+            }
+
+            val newMode = TestPreferMode(
+                id = "custom_${UUID.randomUUID()}",
+                name = candidateName,
+                builtIn = false,
+                filterUnavailable = autoTestFilterUnavailable.value,
+                latencyEnabled = autoTestLatencyEnabled.value,
+                latencyMode = autoTestLatencyMode.value,
+                latencyThresholdMs = autoTestLatencyThresholdMs.value,
+                bandwidthEnabled = autoTestBandwidthEnabled.value,
+                bandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled.value,
+                bandwidthUploadEnabled = autoTestBandwidthUploadEnabled.value,
+                bandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps.value,
+                bandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps.value,
+                bandwidthWifiOnly = autoTestBandwidthWifiOnly.value,
+                bandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb.value,
+                bandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb.value,
+                unlockEnabled = autoTestUnlockEnabled.value,
+                byRegion = autoTestByRegion.value,
+                nodeLimit = autoTestNodeLimit.value,
+                defaultPriority = currentMode?.defaultPriority ?: BestNodePriority.LATENCY,
+                unlockPriorityMode = currentMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
+                unlockPriorityTargetSiteIds = currentMode?.unlockPriorityTargetSiteIds ?: emptyList()
+            )
+            settingsRepository.setPreferTestModes(existing + newMode)
+            settingsRepository.setPreferTestSelectedModeId(newMode.id)
+            _error.value = "已新增模式：${newMode.name}"
+        }
+    }
+
+    fun deleteCurrentPreferTestMode() {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val currentMode = preferTestModes.value.firstOrNull { it.id == currentId }
+            if (currentMode == null) return@launch
+            if (currentMode.builtIn) {
+                _error.value = "内置模式不可删除"
+                return@launch
+            }
+            val updated = preferTestModes.value.filterNot { it.id == currentMode.id }
+            settingsRepository.setPreferTestModes(updated)
+            settingsRepository.setPreferTestSelectedModeId(BUILTIN_PREFER_MODE_CHAT)
+            applyPreferTestMode(BUILTIN_PREFER_MODE_CHAT)
+            _error.value = "已删除模式：${currentMode.name}"
+        }
+    }
+
+    fun updateCurrentPreferModePriority(priority: BestNodePriority) {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val existing = preferTestModes.value
+            val target = existing.firstOrNull { it.id == currentId } ?: return@launch
+            val updatedMode = target.copy(defaultPriority = priority)
+            val updated = existing.map { if (it.id == currentId) updatedMode else it }
+            settingsRepository.setPreferTestModes(updated)
+        }
+    }
+
+    fun updateCurrentPreferModeUnlockPriority(
+        mode: UnlockPriorityMode,
+        targetSiteIds: List<String>
+    ) {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val existing = preferTestModes.value
+            val target = existing.firstOrNull { it.id == currentId } ?: return@launch
+            val updatedMode = target.copy(
+                unlockPriorityMode = mode,
+                unlockPriorityTargetSiteIds = targetSiteIds.distinct()
+            )
+            val updated = existing.map { if (it.id == currentId) updatedMode else it }
+            settingsRepository.setPreferTestModes(updated)
+        }
+    }
+
+    fun startAutomatedTest(
+        preferPriority: BestNodePriority? = null,
+        connectBestAfterDone: Boolean = false,
+        configOverride: AutoTestConfig? = null
+    ) {
         if (_autoTestProgress.value.running) return
 
-        val config = AutoTestConfig(
+        val config = configOverride ?: AutoTestConfig(
             enabled = autoTestEnabled.value,
             filterUnavailable = autoTestFilterUnavailable.value,
+            latencyEnabled = autoTestLatencyEnabled.value,
+            latencyMode = autoTestLatencyMode.value,
             latencyThresholdMs = autoTestLatencyThresholdMs.value,
             bandwidthEnabled = autoTestBandwidthEnabled.value,
-            bandwidthThresholdMbps = autoTestBandwidthThresholdMbps.value,
+            bandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled.value,
+            bandwidthUploadEnabled = autoTestBandwidthUploadEnabled.value,
+            bandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps.value,
+            bandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps.value,
             bandwidthWifiOnly = autoTestBandwidthWifiOnly.value,
-            bandwidthSizeMb = autoTestBandwidthSizeMb.value,
+            bandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb.value,
+            bandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb.value,
             unlockEnabled = autoTestUnlockEnabled.value,
+            byRegion = autoTestByRegion.value,
             nodeLimit = autoTestNodeLimit.value
         )
 
@@ -1087,72 +1363,106 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fetchNodes(bypassThrottle = true, runUrlTest = false)
                 waitForCondition(timeoutMs = 25_000) { !isLoading.value && nodes.value.isNotEmpty() }
 
-                var workingNodes = nodes.value.take(config.nodeLimit)
+                var workingNodes = selectNodesForAutoTest(nodes.value, config)
+                val initialSelectedCount = workingNodes.size
                 if (workingNodes.isEmpty()) {
                     _error.value = "自动化测试失败：没有可用节点"
                     _autoTestProgress.value = AutoTestProgress(running = false, stage = AutoTestStage.FAILED, message = "没有可用节点")
                     return@launch
                 }
 
-                _autoTestProgress.value = AutoTestProgress(
-                    running = true,
-                    stage = AutoTestStage.URL_TEST,
-                    message = "正在进行 URL Test...",
-                    total = workingNodes.size
-                )
+                if (config.latencyEnabled) {
+                    val latencyModeLabel = if (config.latencyMode == AutoTestLatencyMode.TCPING) "TCPing" else "URL Test"
+                    _autoTestProgress.value = AutoTestProgress(
+                        running = true,
+                        stage = AutoTestStage.LATENCY_TEST,
+                        message = "正在进行 $latencyModeLabel...",
+                        total = workingNodes.size
+                    )
 
-                urlTestAllNodes(workingNodes)
-                waitForCondition(timeoutMs = 120_000) { !isTesting.value }
+                    if (config.latencyMode == AutoTestLatencyMode.TCPING) {
+                        internalTestNodes(workingNodes) { completed, total ->
+                            _autoTestProgress.value = AutoTestProgress(
+                                running = true,
+                                stage = AutoTestStage.LATENCY_TEST,
+                                message = "正在进行 TCPing...",
+                                completed = completed,
+                                total = total
+                            )
+                        }
+                    } else {
+                        urlTestAllNodes(workingNodes)
+                        waitForUrlTestCompletion(startTimeoutMs = 12_000, finishTimeoutMs = 120_000)
+                    }
 
-                workingNodes = nodeDao.getAllNodes().first().take(config.nodeLimit)
+                    val latestNodesById = nodeDao.getAllNodes().first().associateBy { it.id }
+                    workingNodes = workingNodes.mapNotNull { latestNodesById[it.id] }
 
-                _autoTestProgress.value = AutoTestProgress(
-                    running = true,
-                    stage = AutoTestStage.FILTER_LATENCY,
-                    message = "按延迟阈值筛选节点...",
-                    total = workingNodes.size
-                )
+                    _autoTestProgress.value = AutoTestProgress(
+                        running = true,
+                        stage = AutoTestStage.FILTER_LATENCY,
+                        message = "按延迟阈值筛选节点...",
+                        total = workingNodes.size
+                    )
 
-                val latencyFiltered = if (config.filterUnavailable) {
-                    workingNodes.filter { it.isAvailable && it.latency > 0 && it.latency <= config.latencyThresholdMs }
+                    val latencyFiltered = if (config.filterUnavailable) {
+                        workingNodes.filter { it.isAvailable && it.latency > 0 && it.latency <= config.latencyThresholdMs }
+                    } else {
+                        workingNodes
+                    }
+
+                    val removedByLatency = workingNodes.filterNot { node -> latencyFiltered.any { it.id == node.id } }
+                    removedByLatency.forEach { node ->
+                        nodeDao.updateAutoTestStatus(node.id, false, "LATENCY_FILTERED", System.currentTimeMillis())
+                    }
+                    latencyFiltered.forEach { node ->
+                        nodeDao.updateAutoTestStatus(node.id, true, "LATENCY_PASSED", System.currentTimeMillis())
+                    }
+
+                    workingNodes = latencyFiltered
                 } else {
-                    workingNodes
+                    workingNodes.forEach { node ->
+                        nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "LATENCY_SKIPPED", System.currentTimeMillis())
+                    }
                 }
-
-                val removedByLatency = workingNodes.filterNot { node -> latencyFiltered.any { it.id == node.id } }
-                removedByLatency.forEach { node ->
-                    nodeDao.updateAutoTestStatus(node.id, false, "LATENCY_FILTERED", System.currentTimeMillis())
-                }
-                latencyFiltered.forEach { node ->
-                    nodeDao.updateAutoTestStatus(node.id, true, "LATENCY_PASSED", System.currentTimeMillis())
-                }
-
-                workingNodes = latencyFiltered
 
                 if (config.bandwidthEnabled) {
                     val wifiAllowed = !config.bandwidthWifiOnly || NetworkUtils.isWifiConnected(getApplication())
                     if (!wifiAllowed) {
                         _error.value = "当前非 Wi-Fi 网络，已跳过带宽测试"
+                    } else if (!config.bandwidthDownloadEnabled && !config.bandwidthUploadEnabled) {
+                        _error.value = "未选择上下行带宽测试方向，已跳过带宽测试"
                     } else {
+                        val bandwidthDirectionList = mutableListOf<String>()
+                        if (config.bandwidthDownloadEnabled) bandwidthDirectionList.add("下行")
+                        if (config.bandwidthUploadEnabled) bandwidthDirectionList.add("上行")
+                        val bandwidthDirections = bandwidthDirectionList.joinToString("+")
                         _autoTestProgress.value = AutoTestProgress(
                             running = true,
                             stage = AutoTestStage.BANDWIDTH_TEST,
-                            message = "逐节点带宽测试中...",
+                            message = "逐节点带宽测试中（$bandwidthDirections）...",
                             total = workingNodes.size
                         )
 
-                        val bandwidthMap = mutableMapOf<String, Float>()
+                        val downloadBandwidthMap = mutableMapOf<String, Float>()
+                        val uploadBandwidthMap = mutableMapOf<String, Float>()
                         workingNodes.forEachIndexed { index, node ->
                             _autoTestProgress.value = AutoTestProgress(
                                 running = true,
                                 stage = AutoTestStage.BANDWIDTH_TEST,
-                                message = "带宽测试: ${node.getDisplayName()} (${index + 1}/${workingNodes.size})",
+                                message = "带宽测试($bandwidthDirections): ${node.getDisplayName()} (${index + 1}/${workingNodes.size})",
                                 completed = index + 1,
                                 total = workingNodes.size
                             )
-                            val mbps = testNodeBandwidthMbps(node, config.bandwidthSizeMb)
-                            bandwidthMap[node.id] = mbps
-                            nodeDao.updateBandwidth(node.id, mbps, 0f, System.currentTimeMillis())
+                            val downloadMbps = if (config.bandwidthDownloadEnabled) {
+                                testNodeDownloadBandwidthMbps(node, config.bandwidthDownloadSizeMb)
+                            } else 0f
+                            val uploadMbps = if (config.bandwidthUploadEnabled) {
+                                testNodeUploadBandwidthMbps(node, config.bandwidthUploadSizeMb)
+                            } else 0f
+                            downloadBandwidthMap[node.id] = downloadMbps
+                            uploadBandwidthMap[node.id] = uploadMbps
+                            nodeDao.updateBandwidth(node.id, downloadMbps, uploadMbps, System.currentTimeMillis())
                         }
 
                         _autoTestProgress.value = AutoTestProgress(
@@ -1162,7 +1472,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             total = workingNodes.size
                         )
 
-                        val filtered = workingNodes.filter { (bandwidthMap[it.id] ?: 0f) >= config.bandwidthThresholdMbps.toFloat() }
+                        val filtered = workingNodes.filter { node ->
+                            val downloadThreshold = config.bandwidthDownloadThresholdMbps.toFloat()
+                            val uploadThreshold = config.bandwidthUploadThresholdMbps.toFloat()
+                            val downloadPassed = !config.bandwidthDownloadEnabled || (downloadBandwidthMap[node.id] ?: 0f) >= downloadThreshold
+                            val uploadPassed = !config.bandwidthUploadEnabled || (uploadBandwidthMap[node.id] ?: 0f) >= uploadThreshold
+                            downloadPassed && uploadPassed
+                        }
                         val removed = workingNodes.filterNot { node -> filtered.any { it.id == node.id } }
                         removed.forEach { node ->
                             nodeDao.updateAutoTestStatus(node.id, false, "BANDWIDTH_FILTERED", System.currentTimeMillis())
@@ -1175,29 +1491,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (config.unlockEnabled && workingNodes.isNotEmpty()) {
+                    val unlockConcurrency = AppConfig.AUTO_TEST_UNLOCK_CONCURRENCY.coerceAtLeast(1)
                     _autoTestProgress.value = AutoTestProgress(
                         running = true,
                         stage = AutoTestStage.UNLOCK_TEST,
-                        message = "逐节点流媒体解锁测试中...",
+                        message = "流媒体解锁测试中（并发 $unlockConcurrency）...",
                         total = workingNodes.size
                     )
 
-                    workingNodes.forEachIndexed { index, node ->
-                        _autoTestProgress.value = AutoTestProgress(
-                            running = true,
-                            stage = AutoTestStage.UNLOCK_TEST,
-                            message = "解锁测试: ${node.getDisplayName()} (${index + 1}/${workingNodes.size})",
-                            completed = index + 1,
-                            total = workingNodes.size
-                        )
-                        val (summary, passed) = testNodeUnlock(node)
-                        nodeDao.updateUnlock(node.id, summary, passed, System.currentTimeMillis())
-                        nodeDao.updateAutoTestStatus(
-                            nodeId = node.id,
-                            available = node.isAvailable && passed,
-                            status = if (passed) "UNLOCK_PASSED" else "UNLOCK_FAILED",
-                            testedAt = System.currentTimeMillis()
-                        )
+                    val total = workingNodes.size
+                    val completed = AtomicInteger(0)
+                    coroutineScope {
+                        val semaphore = Semaphore(unlockConcurrency)
+                        workingNodes.map { node ->
+                            async(Dispatchers.IO) {
+                                semaphore.withPermit {
+                                    val (summary, passed) = testNodeUnlock(node)
+                                    val now = System.currentTimeMillis()
+                                    nodeDao.updateUnlock(node.id, summary, passed, now)
+                                    nodeDao.updateAutoTestStatus(
+                                        nodeId = node.id,
+                                        available = node.isAvailable && passed,
+                                        status = if (passed) "UNLOCK_PASSED" else "UNLOCK_FAILED",
+                                        testedAt = now
+                                    )
+
+                                    val done = completed.incrementAndGet()
+                                    _autoTestProgress.value = AutoTestProgress(
+                                        running = true,
+                                        stage = AutoTestStage.UNLOCK_TEST,
+                                        message = "流媒体解锁测试中（并发 $unlockConcurrency）...",
+                                        completed = done,
+                                        total = total
+                                    )
+                                }
+                            }
+                        }.awaitAll()
                     }
                 }
 
@@ -1206,8 +1535,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     stage = AutoTestStage.DONE,
                     message = "完成：保留 ${workingNodes.size} 个节点",
                     completed = workingNodes.size,
-                    total = config.nodeLimit
+                    total = initialSelectedCount
                 )
+
+                if (preferPriority != null && workingNodes.isNotEmpty()) {
+                    val latestById = nodeDao.getAllNodes().first().associateBy { it.id }
+                    val finalCandidates = workingNodes.mapNotNull { latestById[it.id] }.filter { it.isAvailable }
+                    val currentPreferMode = preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
+                    val bestNode = pickBestNode(finalCandidates, preferPriority, currentPreferMode)
+                    if (bestNode != null) {
+                        settingsRepository.setSelectedNodeId(bestNode.id)
+                        if (connectBestAfterDone) {
+                            ServiceManager.startVpn(getApplication(), bestNode, proxyMode.value)
+                            _error.value = "已自动连接最优节点：${bestNode.getDisplayName()}"
+                        } else {
+                            _error.value = "已选择最优节点：${bestNode.getDisplayName()}"
+                        }
+                    } else if (connectBestAfterDone) {
+                        _error.value = "测试完成，但未找到符合择优规则的节点"
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(tag, "Automated test failed", e)
                 _autoTestProgress.value = AutoTestProgress(
@@ -1217,6 +1564,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 _error.value = "自动化测试失败: ${e.message}"
             } finally {
+                if (connectBestAfterDone) {
+                    _isAutoSelecting.value = false
+                }
                 autoTestJob = null
             }
         }
@@ -1225,11 +1575,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelAutomatedTest() {
         autoTestJob?.cancel()
         autoTestJob = null
+        _isAutoSelecting.value = false
         _autoTestProgress.value = AutoTestProgress(
             running = false,
             stage = AutoTestStage.CANCELED,
             message = "自动化测试已取消"
         )
+    }
+
+    private fun selectNodesForAutoTest(allNodes: List<Node>, config: AutoTestConfig): List<Node> {
+        val limit = config.nodeLimit.coerceAtLeast(1)
+        if (!config.byRegion) {
+            return allNodes.take(limit)
+        }
+
+        return allNodes
+            .groupBy { resolveRegionBucket(it) }
+            .values
+            .flatMap { regionNodes -> regionNodes.take(limit) }
+    }
+
+    private fun resolveRegionBucket(node: Node): String {
+        val normalized = node.country
+            ?.trim()
+            ?.uppercase()
+            ?.takeIf { it.length == 2 && it.all { ch -> ch in 'A'..'Z' } }
+        if (normalized != null) {
+            return normalized
+        }
+
+        return extractRegionCodeFromFlag(node.name) ?: "UNKNOWN"
+    }
+
+    private fun extractRegionCodeFromFlag(text: String): String? {
+        var i = 0
+        while (i < text.length) {
+            val first = text.codePointAt(i)
+            val firstLen = Character.charCount(first)
+            if (first in 0x1F1E6..0x1F1FF && i + firstLen < text.length) {
+                val second = text.codePointAt(i + firstLen)
+                if (second in 0x1F1E6..0x1F1FF) {
+                    val c1 = (first - 0x1F1E6 + 'A'.code).toChar()
+                    val c2 = (second - 0x1F1E6 + 'A'.code).toChar()
+                    return "$c1$c2"
+                }
+            }
+            i += firstLen
+        }
+        return null
     }
 
     private suspend fun waitForCondition(timeoutMs: Long, condition: () -> Boolean) {
@@ -1242,7 +1635,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun testNodeBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
+    private suspend fun waitForUrlTestCompletion(startTimeoutMs: Long, finishTimeoutMs: Long) {
+        val start = System.currentTimeMillis()
+        while (!isTesting.value && System.currentTimeMillis() - start < startTimeoutMs) {
+            delay(100)
+        }
+        if (!isTesting.value) {
+            throw IllegalStateException("URL test did not start")
+        }
+        waitForCondition(timeoutMs = finishTimeoutMs) { !isTesting.value }
+    }
+
+    private suspend fun testNodeDownloadBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
         val port = pickFreePort()
         val started = UnlockTestManager.start(getApplication(), node, port)
         if (!started) return@withContext 0f
@@ -1273,7 +1677,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val durationMs = (System.currentTimeMillis() - start).coerceAtLeast(1)
             (total * 8f / 1_000_000f) / (durationMs / 1000f)
         } catch (e: Exception) {
-            Log.e(tag, "Bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
+            Log.e(tag, "Download bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
+            0f
+        } finally {
+            UnlockTestManager.stop()
+        }
+    }
+
+    private suspend fun testNodeUploadBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
+        val port = pickFreePort()
+        val started = UnlockTestManager.start(getApplication(), node, port)
+        if (!started) return@withContext 0f
+
+        try {
+            val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
+            val client = OkHttpClient.Builder()
+                .proxy(proxy)
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(45, TimeUnit.SECONDS)
+                .writeTimeout(45, TimeUnit.SECONDS)
+                .build()
+
+            val bytes = sizeMb.toLong() * 1_000_000L
+            val randomBuffer = ByteArray(8192) { 0x5A.toByte() }
+            val requestBody = object : RequestBody() {
+                override fun contentType() = "application/octet-stream".toMediaType()
+
+                override fun contentLength(): Long = bytes
+
+                override fun writeTo(sink: BufferedSink) {
+                    var uploaded = 0L
+                    while (uploaded < bytes) {
+                        val remain = bytes - uploaded
+                        val writeSize = minOf(remain.toInt(), randomBuffer.size)
+                        sink.write(randomBuffer, 0, writeSize)
+                        uploaded += writeSize
+                    }
+                }
+            }
+
+            val request = Request.Builder()
+                .url(AppConfig.SPEED_TEST_UPLOAD_URL)
+                .post(requestBody)
+                .build()
+
+            val start = System.currentTimeMillis()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext 0f
+                resp.body?.close()
+            }
+            val durationMs = (System.currentTimeMillis() - start).coerceAtLeast(1)
+            (bytes * 8f / 1_000_000f) / (durationMs / 1000f)
+        } catch (e: Exception) {
+            Log.e(tag, "Upload bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
             0f
         } finally {
             UnlockTestManager.stop()
@@ -1282,7 +1738,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun testNodeUnlock(node: Node): Pair<String, Boolean> = withContext(Dispatchers.IO) {
         val port = pickFreePort()
-        val started = UnlockTestManager.start(getApplication(), node, port)
+        val session = UnlockTestManager.createSession(getApplication(), node, port)
+        val started = session.start()
         if (!started) return@withContext "启动测试代理失败" to false
 
         try {
@@ -1301,11 +1758,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .map { cleanLogLine(it) }
                 .filter { it.isNotEmpty() }
                 .filter { it.contains("YES", true) || it.contains("NO", true) || it.contains("Available", true) || it.contains("Region", true) }
+                .filterNot { it.contains(Regex("""\bYES\s*=\s*\d+""", RegexOption.IGNORE_CASE)) || it.contains(Regex("""\bNO\s*=\s*\d+""", RegexOption.IGNORE_CASE)) }
+                .distinct()
                 .take(200)
                 .toList()
 
-            val yes = lines.count { it.contains("YES", true) || it.contains("Available", true) }
-            val no = lines.count { it.contains("NO", true) }
+            val yes = lines.count {
+                (it.contains(Regex("""\bYES\b""", RegexOption.IGNORE_CASE)) || it.contains("Available", true)) &&
+                    !it.contains(Regex("""\bNO\b""", RegexOption.IGNORE_CASE))
+            }
+            val no = lines.count { it.contains(Regex("""\bNO\b""", RegexOption.IGNORE_CASE)) }
             val pass = yes >= 3 && yes >= no
             val fullResult = if (lines.isEmpty()) {
                 if (result.stdout.isBlank()) "未识别到解锁结果" else "未识别关键结果（可在流媒体工具里查看完整输出）"
@@ -1317,8 +1779,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(tag, "Unlock test failed for ${node.getDisplayName()}: ${e.message}")
             ("解锁测试失败: ${e.message}") to false
         } finally {
-            UnlockTestManager.stop()
+            session.stop()
         }
+    }
+
+    private fun pickBestNode(
+        candidates: List<Node>,
+        priority: BestNodePriority,
+        mode: TestPreferMode? = null
+    ): Node? {
+        if (candidates.isEmpty()) return null
+        return when (priority) {
+            BestNodePriority.LATENCY -> candidates
+                .filter { it.latency > 0 }
+                .minWithOrNull(compareBy<Node> { it.latency }.thenByDescending { it.downloadMbps }.thenByDescending { it.uploadMbps })
+            BestNodePriority.DOWNLOAD -> candidates
+                .filter { it.downloadMbps > 0f }
+                .maxWithOrNull(compareBy<Node> { it.downloadMbps }.thenBy { -safeLatency(it) })
+            BestNodePriority.UPLOAD -> candidates
+                .filter { it.uploadMbps > 0f }
+                .maxWithOrNull(compareBy<Node> { it.uploadMbps }.thenBy { -safeLatency(it) })
+            BestNodePriority.UNLOCK_COUNT -> candidates
+                .maxWithOrNull(
+                    compareBy<Node> { unlockPriorityScore(it, mode) }
+                        .thenBy { extractUnlockYesCount(it.unlockSummary) }
+                        .thenBy { it.unlockPassed.compareTo(false) }
+                        .thenBy { if (mode?.bandwidthEnabled == true && mode.bandwidthDownloadEnabled) it.downloadMbps else 0f }
+                        .thenBy { -safeLatency(it) }
+                )
+        }
+    }
+
+    private fun unlockPriorityScore(node: Node, mode: TestPreferMode?): Int {
+        if (mode == null) return extractUnlockYesCount(node.unlockSummary)
+        return when (mode.unlockPriorityMode) {
+            UnlockPriorityMode.COUNT -> extractUnlockYesCount(node.unlockSummary)
+            UnlockPriorityMode.TARGET_SITES -> {
+                if (mode.unlockPriorityTargetSiteIds.isEmpty()) {
+                    extractUnlockYesCount(node.unlockSummary)
+                } else {
+                    countMatchedUnlockTargetSites(node.unlockSummary, mode.unlockPriorityTargetSiteIds)
+                }
+            }
+        }
+    }
+
+    private fun countMatchedUnlockTargetSites(summary: String, targetSiteIds: List<String>): Int {
+        val positiveLines = summary.lineSequence()
+            .map { cleanLogLine(it) }
+            .filter { it.isNotBlank() }
+            .filter { line ->
+                (line.contains("YES", true) || line.contains("Available", true)) &&
+                    !line.contains(Regex("""\bNO\b""", RegexOption.IGNORE_CASE))
+            }
+            .toList()
+        if (positiveLines.isEmpty()) return 0
+        val presets = AppConfig.UNLOCK_PRIORITY_PRESET_SITES.associateBy { it.id }
+        return targetSiteIds.distinct().count { siteId ->
+            val site = presets[siteId] ?: return@count false
+            positiveLines.any { line -> unlockSiteMatches(line, site) }
+        }
+    }
+
+    private fun unlockSiteMatches(line: String, site: UnlockPrioritySite): Boolean {
+        return site.keywords.any { keyword -> line.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun safeLatency(node: Node): Int = if (node.latency > 0) node.latency else Int.MAX_VALUE
+
+    private fun extractUnlockYesCount(summary: String): Int {
+        val match = Regex("""\bYES\s*=\s*(\d+)""", RegexOption.IGNORE_CASE).find(summary)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: if (summary.contains("YES", ignoreCase = true) || summary.contains("Available", ignoreCase = true)) 1 else 0
     }
 
     private fun cleanLogLine(input: String): String {

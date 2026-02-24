@@ -6,9 +6,17 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import xyz.a202132.app.data.model.ProxyMode
-import xyz.a202132.app.data.model.PerAppProxyMode
+import org.json.JSONArray
+import org.json.JSONObject
 import xyz.a202132.app.data.model.IPv6RoutingMode
+import xyz.a202132.app.data.model.PerAppProxyMode
+import xyz.a202132.app.data.model.ProxyMode
+import xyz.a202132.app.viewmodel.AutoTestLatencyMode
+import xyz.a202132.app.viewmodel.BestNodePriority
+import xyz.a202132.app.viewmodel.BUILTIN_PREFER_MODE_CHAT
+import xyz.a202132.app.viewmodel.TestPreferMode
+import xyz.a202132.app.viewmodel.UnlockPriorityMode
+import xyz.a202132.app.viewmodel.normalizePreferTestModes
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
@@ -39,13 +47,25 @@ class SettingsRepository(private val context: Context) {
         // 自动化测试设置
         private val AUTO_TEST_ENABLED = booleanPreferencesKey("auto_test_enabled")
         private val AUTO_TEST_FILTER_UNAVAILABLE = booleanPreferencesKey("auto_test_filter_unavailable")
+        private val AUTO_TEST_LATENCY_ENABLED = booleanPreferencesKey("auto_test_latency_enabled")
+        private val AUTO_TEST_LATENCY_MODE = stringPreferencesKey("auto_test_latency_mode")
         private val AUTO_TEST_LATENCY_THRESHOLD = intPreferencesKey("auto_test_latency_threshold")
         private val AUTO_TEST_BANDWIDTH_ENABLED = booleanPreferencesKey("auto_test_bandwidth_enabled")
+        private val AUTO_TEST_BANDWIDTH_DOWNLOAD_ENABLED = booleanPreferencesKey("auto_test_bandwidth_download_enabled")
+        private val AUTO_TEST_BANDWIDTH_UPLOAD_ENABLED = booleanPreferencesKey("auto_test_bandwidth_upload_enabled")
+        private val AUTO_TEST_BANDWIDTH_DOWNLOAD_THRESHOLD = intPreferencesKey("auto_test_bandwidth_download_threshold")
+        private val AUTO_TEST_BANDWIDTH_UPLOAD_THRESHOLD = intPreferencesKey("auto_test_bandwidth_upload_threshold")
         private val AUTO_TEST_BANDWIDTH_THRESHOLD = intPreferencesKey("auto_test_bandwidth_threshold")
         private val AUTO_TEST_BANDWIDTH_WIFI_ONLY = booleanPreferencesKey("auto_test_bandwidth_wifi_only")
-        private val AUTO_TEST_BANDWIDTH_SIZE_MB = intPreferencesKey("auto_test_bandwidth_size_mb")
+        private val AUTO_TEST_BANDWIDTH_DOWNLOAD_SIZE_MB = intPreferencesKey("auto_test_bandwidth_download_size_mb")
+        private val AUTO_TEST_BANDWIDTH_UPLOAD_SIZE_MB = intPreferencesKey("auto_test_bandwidth_upload_size_mb")
+        private val AUTO_TEST_BANDWIDTH_SIZE_MB = intPreferencesKey("auto_test_bandwidth_size_mb") // legacy fallback
         private val AUTO_TEST_UNLOCK_ENABLED = booleanPreferencesKey("auto_test_unlock_enabled")
+        private val AUTO_TEST_BY_REGION = booleanPreferencesKey("auto_test_by_region")
         private val AUTO_TEST_NODE_LIMIT = intPreferencesKey("auto_test_node_limit")
+
+        private val PREFER_TEST_MODES_JSON = stringPreferencesKey("prefer_test_modes_json")
+        private val PREFER_TEST_SELECTED_MODE_ID = stringPreferencesKey("prefer_test_selected_mode_id")
     }
     
     val selectedNodeId: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -218,8 +238,29 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    val autoTestLatencyEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_LATENCY_ENABLED] ?: true
+    }
+
+    suspend fun setAutoTestLatencyEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_LATENCY_ENABLED] = enabled
+        }
+    }
+
     val autoTestLatencyThresholdMs: Flow<Int> = context.dataStore.data.map { preferences ->
         preferences[AUTO_TEST_LATENCY_THRESHOLD] ?: 600
+    }
+
+    val autoTestLatencyMode: Flow<AutoTestLatencyMode> = context.dataStore.data.map { preferences ->
+        val value = preferences[AUTO_TEST_LATENCY_MODE] ?: AutoTestLatencyMode.URL_TEST.name
+        runCatching { AutoTestLatencyMode.valueOf(value) }.getOrDefault(AutoTestLatencyMode.URL_TEST)
+    }
+
+    suspend fun setAutoTestLatencyMode(mode: AutoTestLatencyMode) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_LATENCY_MODE] = mode.name
+        }
     }
 
     suspend fun setAutoTestLatencyThresholdMs(value: Int) {
@@ -238,6 +279,26 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    val autoTestBandwidthDownloadEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_ENABLED] ?: true
+    }
+
+    suspend fun setAutoTestBandwidthDownloadEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_ENABLED] = enabled
+        }
+    }
+
+    val autoTestBandwidthUploadEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BANDWIDTH_UPLOAD_ENABLED] ?: false
+    }
+
+    suspend fun setAutoTestBandwidthUploadEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_ENABLED] = enabled
+        }
+    }
+
     val autoTestBandwidthThresholdMbps: Flow<Int> = context.dataStore.data.map { preferences ->
         preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] ?: 10
     }
@@ -245,6 +306,28 @@ class SettingsRepository(private val context: Context) {
     suspend fun setAutoTestBandwidthThresholdMbps(value: Int) {
         context.dataStore.edit { preferences ->
             preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] = value.coerceAtLeast(1)
+        }
+    }
+
+    val autoTestBandwidthDownloadThresholdMbps: Flow<Int> = context.dataStore.data.map { preferences ->
+        (preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_THRESHOLD] ?: preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] ?: 10)
+            .coerceAtLeast(1)
+    }
+
+    suspend fun setAutoTestBandwidthDownloadThresholdMbps(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_THRESHOLD] = value.coerceAtLeast(1)
+        }
+    }
+
+    val autoTestBandwidthUploadThresholdMbps: Flow<Int> = context.dataStore.data.map { preferences ->
+        (preferences[AUTO_TEST_BANDWIDTH_UPLOAD_THRESHOLD] ?: preferences[AUTO_TEST_BANDWIDTH_THRESHOLD] ?: 10)
+            .coerceAtLeast(1)
+    }
+
+    suspend fun setAutoTestBandwidthUploadThresholdMbps(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_THRESHOLD] = value.coerceAtLeast(1)
         }
     }
 
@@ -258,21 +341,42 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    val autoTestBandwidthSizeMb: Flow<Int> = context.dataStore.data.map { preferences ->
-        val value = preferences[AUTO_TEST_BANDWIDTH_SIZE_MB] ?: 10
+    val autoTestBandwidthDownloadSizeMb: Flow<Int> = context.dataStore.data.map { preferences ->
+        val value = preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_SIZE_MB]
+            ?: preferences[AUTO_TEST_BANDWIDTH_SIZE_MB]
+            ?: 10
         when (value) {
             1, 10, 25, 50 -> value
             else -> 10
         }
     }
 
-    suspend fun setAutoTestBandwidthSizeMb(value: Int) {
+    suspend fun setAutoTestBandwidthDownloadSizeMb(value: Int) {
         val normalized = when (value) {
             1, 10, 25, 50 -> value
             else -> 10
         }
         context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_SIZE_MB] = normalized
             preferences[AUTO_TEST_BANDWIDTH_SIZE_MB] = normalized
+        }
+    }
+
+    val autoTestBandwidthUploadSizeMb: Flow<Int> = context.dataStore.data.map { preferences ->
+        val value = preferences[AUTO_TEST_BANDWIDTH_UPLOAD_SIZE_MB] ?: 10
+        when (value) {
+            1, 10, 25, 50 -> value
+            else -> 10
+        }
+    }
+
+    suspend fun setAutoTestBandwidthUploadSizeMb(value: Int) {
+        val normalized = when (value) {
+            1, 10, 25, 50 -> value
+            else -> 10
+        }
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_SIZE_MB] = normalized
         }
     }
 
@@ -286,6 +390,16 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    val autoTestByRegion: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AUTO_TEST_BY_REGION] ?: false
+    }
+
+    suspend fun setAutoTestByRegion(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_TEST_BY_REGION] = enabled
+        }
+    }
+
     val autoTestNodeLimit: Flow<Int> = context.dataStore.data.map { preferences ->
         preferences[AUTO_TEST_NODE_LIMIT] ?: 20
     }
@@ -294,6 +408,125 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences[AUTO_TEST_NODE_LIMIT] = value.coerceIn(1, 200)
         }
+    }
+
+    val preferTestModes: Flow<List<TestPreferMode>> = context.dataStore.data.map { preferences ->
+        val rawJson = preferences[PREFER_TEST_MODES_JSON]
+        if (rawJson.isNullOrBlank()) {
+            return@map normalizePreferTestModes(emptyList())
+        }
+        runCatching {
+            decodePreferTestModes(rawJson)
+        }.getOrElse {
+            normalizePreferTestModes(emptyList())
+        }
+    }
+
+    suspend fun setPreferTestModes(modes: List<TestPreferMode>) {
+        context.dataStore.edit { preferences ->
+            preferences[PREFER_TEST_MODES_JSON] = encodePreferTestModes(normalizePreferTestModes(modes))
+        }
+    }
+
+    val preferTestSelectedModeId: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[PREFER_TEST_SELECTED_MODE_ID] ?: BUILTIN_PREFER_MODE_CHAT
+    }
+
+    suspend fun setPreferTestSelectedModeId(modeId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PREFER_TEST_SELECTED_MODE_ID] = modeId
+        }
+    }
+
+    private fun encodePreferTestModes(modes: List<TestPreferMode>): String {
+        val array = JSONArray()
+        modes.forEach { mode ->
+            array.put(
+                JSONObject().apply {
+                    put("id", mode.id)
+                    put("name", mode.name)
+                    put("builtIn", mode.builtIn)
+                    put("filterUnavailable", mode.filterUnavailable)
+                    put("latencyEnabled", mode.latencyEnabled)
+                    put("latencyMode", mode.latencyMode.name)
+                    put("latencyThresholdMs", mode.latencyThresholdMs)
+                    put("bandwidthEnabled", mode.bandwidthEnabled)
+                    put("bandwidthDownloadEnabled", mode.bandwidthDownloadEnabled)
+                    put("bandwidthUploadEnabled", mode.bandwidthUploadEnabled)
+                    put("bandwidthDownloadThresholdMbps", mode.bandwidthDownloadThresholdMbps)
+                    put("bandwidthUploadThresholdMbps", mode.bandwidthUploadThresholdMbps)
+                    put("bandwidthWifiOnly", mode.bandwidthWifiOnly)
+                    put("bandwidthDownloadSizeMb", mode.bandwidthDownloadSizeMb)
+                    put("bandwidthUploadSizeMb", mode.bandwidthUploadSizeMb)
+                    put("unlockEnabled", mode.unlockEnabled)
+                    put("byRegion", mode.byRegion)
+                    put("nodeLimit", mode.nodeLimit)
+                    put("defaultPriority", mode.defaultPriority.name)
+                    put("unlockPriorityMode", mode.unlockPriorityMode.name)
+                    put("unlockPriorityTargetSiteIds", JSONArray(mode.unlockPriorityTargetSiteIds))
+                }
+            )
+        }
+        return array.toString()
+    }
+
+    private fun decodePreferTestModes(rawJson: String): List<TestPreferMode> {
+        val array = JSONArray(rawJson)
+        val list = mutableListOf<TestPreferMode>()
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val id = obj.optString("id").trim()
+            val name = obj.optString("name").trim()
+            if (id.isBlank() || name.isBlank()) continue
+            val latencyMode = runCatching {
+                AutoTestLatencyMode.valueOf(obj.optString("latencyMode", AutoTestLatencyMode.URL_TEST.name))
+            }.getOrDefault(AutoTestLatencyMode.URL_TEST)
+            val defaultPriority = runCatching {
+                BestNodePriority.valueOf(obj.optString("defaultPriority", BestNodePriority.LATENCY.name))
+            }.getOrDefault(BestNodePriority.LATENCY)
+            val unlockPriorityMode = runCatching {
+                UnlockPriorityMode.valueOf(obj.optString("unlockPriorityMode", UnlockPriorityMode.COUNT.name))
+            }.getOrDefault(UnlockPriorityMode.COUNT)
+            val unlockPriorityTargetSiteIds = obj.optJSONArray("unlockPriorityTargetSiteIds")
+                ?.let { arr ->
+                    buildList {
+                        for (j in 0 until arr.length()) {
+                            arr.optString(j)?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                    }
+                }
+                ?: emptyList()
+
+            list += TestPreferMode(
+                id = id,
+                name = name,
+                builtIn = obj.optBoolean("builtIn", false),
+                filterUnavailable = obj.optBoolean("filterUnavailable", true),
+                latencyEnabled = if (obj.has("latencyEnabled")) obj.optBoolean("latencyEnabled", true) else true,
+                latencyMode = latencyMode,
+                latencyThresholdMs = obj.optInt("latencyThresholdMs", 600).coerceAtLeast(50),
+                bandwidthEnabled = obj.optBoolean("bandwidthEnabled", false),
+                bandwidthDownloadEnabled = obj.optBoolean("bandwidthDownloadEnabled", true),
+                bandwidthUploadEnabled = obj.optBoolean("bandwidthUploadEnabled", false),
+                bandwidthDownloadThresholdMbps = obj.optInt("bandwidthDownloadThresholdMbps", 10).coerceAtLeast(1),
+                bandwidthUploadThresholdMbps = obj.optInt("bandwidthUploadThresholdMbps", 10).coerceAtLeast(1),
+                bandwidthWifiOnly = obj.optBoolean("bandwidthWifiOnly", true),
+                bandwidthDownloadSizeMb = normalizeSize(obj.optInt("bandwidthDownloadSizeMb", 10)),
+                bandwidthUploadSizeMb = normalizeSize(obj.optInt("bandwidthUploadSizeMb", 10)),
+                unlockEnabled = obj.optBoolean("unlockEnabled", false),
+                byRegion = obj.optBoolean("byRegion", false),
+                nodeLimit = obj.optInt("nodeLimit", 20).coerceIn(1, 200),
+                defaultPriority = defaultPriority,
+                unlockPriorityMode = unlockPriorityMode,
+                unlockPriorityTargetSiteIds = unlockPriorityTargetSiteIds
+            )
+        }
+        return normalizePreferTestModes(list)
+    }
+
+    private fun normalizeSize(value: Int): Int = when (value) {
+        1, 10, 25, 50 -> value
+        else -> 10
     }
 }
 

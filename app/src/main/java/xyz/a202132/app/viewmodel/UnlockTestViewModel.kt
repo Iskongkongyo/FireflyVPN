@@ -4,6 +4,9 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -14,7 +17,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import xyz.a202132.app.AppConfig
 import xyz.a202132.app.data.local.AppDatabase
 import xyz.a202132.app.network.UnlockTestManager
 import xyz.a202132.app.util.UnlockTestsRunner
@@ -22,6 +27,8 @@ import java.net.ServerSocket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 enum class UnlockResultStatus {
     PENDING,
@@ -36,7 +43,8 @@ data class UnlockNodeResult(
     val nodeName: String,
     val status: UnlockResultStatus = UnlockResultStatus.PENDING,
     val summary: String = "等待测试",
-    val rawOutput: String = ""
+    val rawOutput: String = "",
+    val testedAt: Long = 0L
 )
 
 class UnlockTestViewModel(application: Application) : AndroidViewModel(application) {
@@ -66,6 +74,7 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
     val error = _error.asStateFlow()
 
     private var runningJob: Job? = null
+    private val activeSessions = ConcurrentHashMap<String, UnlockTestManager.Session>()
 
     fun clearError() {
         _error.value = null
@@ -101,68 +110,92 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         Log.i(tag, "Start unlock tests for ${selectedNodes.size} nodes")
 
         runningJob = viewModelScope.launch {
+            val concurrency = AppConfig.AUTO_TEST_UNLOCK_CONCURRENCY.coerceAtLeast(1)
+            val completed = AtomicInteger(0)
+            val total = selectedNodes.size
             try {
-                selectedNodes.forEachIndexed { index, node ->
-                    if (!isActive) return@forEachIndexed
+                _progressText.value = "流媒体测试中 (0/$total, 并发=$concurrency)"
+                coroutineScope {
+                    val semaphore = Semaphore(concurrency)
+                    selectedNodes.map { node ->
+                        async(Dispatchers.IO) {
+                            semaphore.withPermit {
+                                if (!isActive) return@withPermit
 
-                    val progress = "流媒体测试中 (${index + 1}/${selectedNodes.size})"
-                    _progressText.value = progress
-                    updateResult(node.id, UnlockResultStatus.RUNNING, "测试中...", "")
-                    Log.d(tag, "Testing node ${index + 1}/${selectedNodes.size}: ${node.getDisplayName()}")
+                                updateResult(node.id, UnlockResultStatus.RUNNING, "测试中...", "", 0L)
+                                Log.d(tag, "Testing node: ${node.getDisplayName()}")
 
-                    val port = pickFreePort()
-                    val started = withContext(Dispatchers.IO) {
-                        UnlockTestManager.start(getApplication(), node, port)
-                    }
-                    if (!started) {
-                        Log.e(tag, "Failed to start proxy for node: ${node.getDisplayName()}")
-                        updateResult(node.id, UnlockResultStatus.FAILED, "启动测试代理失败", "")
-                        return@forEachIndexed
-                    }
+                                val port = pickFreePort()
+                                val session = UnlockTestManager.createSession(getApplication(), node, port)
+                                activeSessions[node.id] = session
 
-                    try {
-                        val result = try {
-                            withContext(Dispatchers.IO) {
-                                UnlockTestsRunner.run(
-                                    context = getApplication(),
-                                    args = listOf(
-                                        "-socks-proxy", "socks5://127.0.0.1:$port",
-                                        "-f", "0",
-                                        "-L", "zh",
-                                        "-b=false",
-                                        "-s=false"
-                                    ),
-                                    timeoutSeconds = 120
-                                )
+                                val started = session.start()
+                                if (!started) {
+                                    Log.e(tag, "Failed to start proxy for node: ${node.getDisplayName()}")
+                                    val now = System.currentTimeMillis()
+                                    updateResult(node.id, UnlockResultStatus.FAILED, "启动测试代理失败", "", now)
+                                    activeSessions.remove(node.id)
+                                    val done = completed.incrementAndGet()
+                                    _progressText.value = "流媒体测试中 ($done/$total, 并发=$concurrency)"
+                                    return@withPermit
+                                }
+
+                                try {
+                                    val result = try {
+                                        UnlockTestsRunner.run(
+                                            context = getApplication(),
+                                            args = listOf(
+                                                "-socks-proxy", "socks5://127.0.0.1:$port",
+                                                "-f", "0",
+                                                "-L", "zh",
+                                                "-b=false",
+                                                "-s=false"
+                                            ),
+                                            timeoutSeconds = 120
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.e(tag, "Unlock runner crashed: ${e.message}", e)
+                                        UnlockTestsRunner.Result(
+                                            exitCode = -3,
+                                            stdout = "runner exception: ${e.message}"
+                                        )
+                                    }
+
+                                    val status = if (result.exitCode == 0) UnlockResultStatus.SUCCESS else UnlockResultStatus.FAILED
+                                    val highlights = extractHighlights(result.stdout)
+                                    val summary = summarizeOutput(result.exitCode, highlights)
+                                    val now = System.currentTimeMillis()
+                                    logStructuredResult(
+                                        nodeName = node.getDisplayName(),
+                                        exitCode = result.exitCode,
+                                        status = status,
+                                        summary = summary,
+                                        highlights = highlights,
+                                        raw = result.stdout
+                                    )
+                                    Log.d(tag, "Node done: ${node.getDisplayName()}, code=${result.exitCode}, summary=$summary")
+                                    updateResult(
+                                        node.id,
+                                        status,
+                                        summary,
+                                        buildDisplayOutput(node.getDisplayName(), result.exitCode, summary, highlights, now, result.stdout),
+                                        now
+                                    )
+                                } finally {
+                                    session.stop()
+                                    activeSessions.remove(node.id)
+                                    val done = completed.incrementAndGet()
+                                    _progressText.value = "流媒体测试中 ($done/$total, 并发=$concurrency)"
+                                }
                             }
-                        } catch (e: Exception) {
-                            Log.e(tag, "Unlock runner crashed: ${e.message}", e)
-                            UnlockTestsRunner.Result(
-                                exitCode = -3,
-                                stdout = "runner exception: ${e.message}"
-                            )
                         }
-
-                        val status = if (result.exitCode == 0) UnlockResultStatus.SUCCESS else UnlockResultStatus.FAILED
-                        val highlights = extractHighlights(result.stdout)
-                        val summary = summarizeOutput(result.exitCode, highlights)
-                        logStructuredResult(
-                            nodeName = node.getDisplayName(),
-                            exitCode = result.exitCode,
-                            status = status,
-                            summary = summary,
-                            highlights = highlights,
-                            raw = result.stdout
-                        )
-                        Log.d(tag, "Node done: ${node.getDisplayName()}, code=${result.exitCode}, summary=$summary")
-                        updateResult(node.id, status, summary, buildDisplayOutput(node.getDisplayName(), result.exitCode, summary, highlights, result.stdout))
-                    } finally {
-                        withContext(Dispatchers.IO) {
-                            UnlockTestManager.stop()
-                        }
-                    }
+                    }.awaitAll()
                 }
             } finally {
+                activeSessions.values.forEach { session ->
+                    runCatching { session.stop() }
+                }
+                activeSessions.clear()
                 _progressText.value = null
                 _isRunning.value = false
                 runningJob = null
@@ -178,7 +211,10 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         _isRunning.value = false
 
         viewModelScope.launch(Dispatchers.IO) {
-            UnlockTestManager.stop()
+            activeSessions.values.forEach { session ->
+                runCatching { session.stop() }
+            }
+            activeSessions.clear()
         }
 
         _results.update { list ->
@@ -196,7 +232,8 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         nodeId: String,
         status: UnlockResultStatus,
         summary: String,
-        rawOutput: String
+        rawOutput: String,
+        testedAt: Long
     ) {
         _results.update { list ->
             list.map { item ->
@@ -204,7 +241,8 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
                     item.copy(
                         status = status,
                         summary = summary,
-                        rawOutput = if (rawOutput.isBlank()) item.rawOutput else rawOutput
+                        rawOutput = if (rawOutput.isBlank()) item.rawOutput else rawOutput,
+                        testedAt = if (testedAt > 0L) testedAt else item.testedAt
                     )
                 } else {
                     item
@@ -294,10 +332,11 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         exitCode: Int,
         summary: String,
         highlights: List<String>,
+        testedAt: Long,
         raw: String
     ): String {
         val project = extractProjectLine(raw) ?: projectUrl
-        val testTime = extractTestTime(raw)
+        val testTime = "测试时间: ${formatTime(testedAt)}"
         val header = buildString {
             appendLine(project)
             appendLine(testTime)
@@ -352,15 +391,9 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
             ?.ifBlank { null }
     }
 
-    private fun extractTestTime(raw: String): String {
-        val line = raw.lineSequence()
-            .map { cleanUtLine(it) }
-            .firstOrNull {
-                it.contains("测试时间", ignoreCase = true) ||
-                    it.contains("test time", ignoreCase = true)
-            }
-        if (!line.isNullOrBlank()) return line
-        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+    private fun formatTime(timestamp: Long): String {
+        val safeTs = if (timestamp > 0L) timestamp else System.currentTimeMillis()
+        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(safeTs))
     }
 
     private fun cleanUtLine(input: String): String {

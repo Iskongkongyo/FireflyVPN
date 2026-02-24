@@ -19,6 +19,12 @@ data class SpeedTestSize(
     val bytes: Long
 )
 
+data class UnlockPrioritySite(
+    val id: String,
+    val label: String,
+    val keywords: List<String>
+)
+
 /**
  * 应用配置常量
  */
@@ -31,8 +37,8 @@ object AppConfig {
     
     // Contact
     const val FEEDBACK_EMAIL = "support@your-domain.com"
-    const val FEEDBACK_URL = "https://github.com/Iskongkongyo/FireflyVPN/issues"  // 反馈链接，留空则不跳转
-    const val GITHUB_URL = "https://github.com/Iskongkongyo/FireflyVPN"  // 项目源码地址，留空则隐藏关于页相关按钮
+    const val FEEDBACK_URL = "https://github.com/your-username/your-repo/issues"  // 反馈链接，留空则不跳转
+    const val GITHUB_URL = "https://github.com/your-username/your-repo"  // 项目源码地址，留空则隐藏关于页相关按钮
     
     // Latency Test
     // 常用http://cp.cloudflare.com/generate_204或https://www.google.com/generate_204
@@ -45,6 +51,7 @@ object AppConfig {
     // Concurrency
     const val TCPING_CONCURRENCY = 16
     const val URL_TEST_CONCURRENCY = 10
+    const val AUTO_TEST_UNLOCK_CONCURRENCY = 3 // 流媒体解锁测试并发建议2~3
     
     // VPN
     const val VPN_MTU = 9000
@@ -128,4 +135,34 @@ object AppConfig {
         }
         return sizes
     }
+
+    val UNLOCK_PRIORITY_PRESET_SITES: List<UnlockPrioritySite> = listOf(
+        UnlockPrioritySite("apple", "Apple", listOf("Apple")),
+        UnlockPrioritySite("bing_search", "BingSearch", listOf("BingSearch")),
+        UnlockPrioritySite("claude", "Claude", listOf("Claude")),
+        UnlockPrioritySite("dazn", "Dazn", listOf("Dazn", "DAZN")),
+        UnlockPrioritySite("disney_plus", "Disney+", listOf("Disney+")),
+        UnlockPrioritySite("gemini", "Gemini", listOf("Gemini")),
+        UnlockPrioritySite("google_search", "GoogleSearch", listOf("GoogleSearch")),
+        UnlockPrioritySite("google_play_store", "Google Play Store", listOf("Google Play Store")),
+        UnlockPrioritySite("iqiyi", "IQiYi", listOf("IQiYi")),
+        UnlockPrioritySite("instagram_audio", "Instagram Licensed Audio", listOf("Instagram Licensed Audio")),
+        UnlockPrioritySite("kocowa", "KOCOWA", listOf("KOCOWA")),
+        UnlockPrioritySite("meta_ai", "MetaAI", listOf("MetaAI")),
+        UnlockPrioritySite("netflix", "Netflix", listOf("Netflix", "Netflix CDN")),
+        UnlockPrioritySite("onetrust", "OneTrust", listOf("OneTrust")),
+        UnlockPrioritySite("chatgpt", "ChatGPT", listOf("ChatGPT", "OpenAI")),
+        UnlockPrioritySite("paramount_plus", "Paramount+", listOf("Paramount+")),
+        UnlockPrioritySite("prime_video", "Amazon Prime Video", listOf("Amazon Prime Video", "Prime")),
+        UnlockPrioritySite("reddit", "Reddit", listOf("Reddit")),
+        UnlockPrioritySite("sony_liv", "SonyLiv", listOf("SonyLiv")),
+        UnlockPrioritySite("sora", "Sora", listOf("Sora")),
+        UnlockPrioritySite("spotify", "Spotify Registration", listOf("Spotify Registration", "Spotify")),
+        UnlockPrioritySite("steam_store", "Steam Store", listOf("Steam Store", "Steam")),
+        UnlockPrioritySite("tvbanywhere", "TVBAnywhere+", listOf("TVBAnywhere+", "TVB")),
+        UnlockPrioritySite("tiktok", "TikTok", listOf("TikTok")),
+        UnlockPrioritySite("viu", "Viu.com", listOf("Viu.com")),
+        UnlockPrioritySite("wikipedia_edit", "Wikipedia Editability", listOf("Wikipedia Editability")),
+        UnlockPrioritySite("youtube", "YouTube Region", listOf("YouTube Region", "YouTube CDN", "YouTube"))
+    )
 }

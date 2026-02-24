@@ -372,6 +372,10 @@ class SingBoxConfigGenerator {
             NodeType.VMESS -> createVmessOutbound(node)
             NodeType.TROJAN -> createTrojanOutbound(node)
             NodeType.HYSTERIA2 -> createHysteria2Outbound(node)
+            NodeType.ANYTLS -> createAnyTlsOutbound(node)
+            NodeType.TUIC -> createTuicOutbound(node)
+            NodeType.NAIVE -> createNaiveOutbound(node)
+            NodeType.WIREGUARD -> createWireGuardOutbound(node)
             NodeType.SHADOWSOCKS -> createShadowsocksOutbound(node)
             NodeType.SOCKS -> createSocksOutbound(node)
             NodeType.HTTP -> createHttpOutbound(node)
@@ -503,6 +507,120 @@ class SingBoxConfigGenerator {
             }
         }
     }
+
+    private fun createAnyTlsOutbound(node: Node): JsonObject {
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
+        val password = uri.userInfo ?: uri.getQueryParameter("password") ?: ""
+
+        return JsonObject().apply {
+            addProperty("type", "anytls")
+            addProperty("server", node.server)
+            addProperty("server_port", node.port)
+            addProperty("password", password)
+            add("tls", JsonObject().apply {
+                addProperty("enabled", true)
+                addProperty("server_name", uri.getQueryParameter("sni") ?: uri.getQueryParameter("host") ?: node.server)
+                addProperty("insecure", queryParamEnabled(uri, "allowInsecure", "insecure", "skip-cert-verify"))
+            })
+        }
+    }
+
+    private fun createTuicOutbound(node: Node): JsonObject {
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
+        val userInfo = uri.userInfo ?: ""
+        val userInfoParts = userInfo.split(":", limit = 2)
+        val uuid = uri.getQueryParameter("uuid") ?: userInfoParts.getOrNull(0) ?: ""
+        val password = uri.getQueryParameter("password")
+            ?: uri.getQueryParameter("token")
+            ?: userInfoParts.getOrNull(1)
+            ?: ""
+
+        return JsonObject().apply {
+            addProperty("type", "tuic")
+            addProperty("server", node.server)
+            addProperty("server_port", node.port)
+            addProperty("uuid", uuid)
+            if (password.isNotEmpty()) {
+                addProperty("password", password)
+            }
+            add("tls", JsonObject().apply {
+                addProperty("enabled", true)
+                addProperty("server_name", uri.getQueryParameter("sni") ?: uri.getQueryParameter("host") ?: node.server)
+                addProperty("insecure", queryParamEnabled(uri, "allowInsecure", "insecure", "skip-cert-verify"))
+            })
+
+            uri.getQueryParameter("congestion_control")?.let { addProperty("congestion_control", it) }
+            uri.getQueryParameter("udp_relay_mode")?.let { addProperty("udp_relay_mode", it) }
+            uri.getQueryParameter("network")?.let { addProperty("network", it) }
+            uri.getQueryParameter("heartbeat")?.let { addProperty("heartbeat", it) }
+
+            if (queryParamEnabled(uri, "zero_rtt_handshake", "0rtt")) {
+                addProperty("zero_rtt_handshake", true)
+            }
+            if (queryParamEnabled(uri, "udp_over_stream")) {
+                addProperty("udp_over_stream", true)
+            }
+        }
+    }
+
+    private fun createNaiveOutbound(node: Node): JsonObject {
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
+        val userInfo = uri.userInfo ?: ""
+        val userInfoParts = userInfo.split(":", limit = 2)
+        val username = uri.getQueryParameter("username") ?: userInfoParts.getOrNull(0) ?: ""
+        val password = uri.getQueryParameter("password") ?: userInfoParts.getOrNull(1) ?: ""
+
+        return JsonObject().apply {
+            addProperty("type", "naive")
+            addProperty("server", node.server)
+            addProperty("server_port", node.port)
+            addProperty("username", username)
+            addProperty("password", password)
+            add("tls", JsonObject().apply {
+                addProperty("enabled", true)
+                addProperty("server_name", uri.getQueryParameter("sni") ?: uri.getQueryParameter("host") ?: node.server)
+                addProperty("insecure", queryParamEnabled(uri, "allowInsecure", "insecure", "skip-cert-verify"))
+            })
+        }
+    }
+
+    private fun createWireGuardOutbound(node: Node): JsonObject {
+        val rawLink = node.getRawLinkPlain()
+        val uri = Uri.parse(rawLink)
+        val privateKey = uri.userInfo ?: uri.getQueryParameter("private_key") ?: ""
+        val peerPublicKey = uri.getQueryParameter("publickey")
+            ?: uri.getQueryParameter("peer_public_key")
+            ?: ""
+        val preSharedKey = uri.getQueryParameter("presharedkey")
+            ?: uri.getQueryParameter("pre_shared_key")
+        val localAddresses = (uri.getQueryParameter("address") ?: uri.getQueryParameter("local_address") ?: "")
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .ifEmpty { listOf("10.0.0.2/32") }
+
+        return JsonObject().apply {
+            addProperty("type", "wireguard")
+            addProperty("server", node.server)
+            addProperty("server_port", node.port)
+            addProperty("private_key", privateKey)
+            addProperty("peer_public_key", peerPublicKey)
+            add("local_address", JsonArray().apply { localAddresses.forEach { add(it) } })
+
+            if (!preSharedKey.isNullOrEmpty()) {
+                addProperty("pre_shared_key", preSharedKey)
+            }
+
+            uri.getQueryParameter("mtu")?.toIntOrNull()?.let { addProperty("mtu", it) }
+
+            parseWireGuardReserved(uri.getQueryParameter("reserved"))?.let { reserved ->
+                add("reserved", JsonArray().apply { reserved.forEach { add(it) } })
+            }
+        }
+    }
     
     private fun createShadowsocksOutbound(node: Node): JsonObject {
         val rawLink = node.getRawLinkPlain()
@@ -581,6 +699,24 @@ class SingBoxConfigGenerator {
                 })
             }
         }
+    }
+
+    private fun queryParamEnabled(uri: Uri, vararg names: String): Boolean {
+        return names.any { name ->
+            when (uri.getQueryParameter(name)?.trim()?.lowercase()) {
+                "1", "true", "yes", "on" -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun parseWireGuardReserved(rawValue: String?): List<Int>? {
+        if (rawValue.isNullOrBlank()) {
+            return null
+        }
+        val values = rawValue.split(",")
+            .mapNotNull { it.trim().toIntOrNull() }
+        return if (values.size == 3) values else null
     }
     
     private fun createTransport(type: String, uri: Uri): JsonObject {

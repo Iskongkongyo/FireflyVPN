@@ -40,7 +40,7 @@
 
 ### 核心功能
 
-- 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、Shadowsocks、SOCKS4/5、HTTP/HTTPS 代理
+- 🚀 **多协议支持**：VLESS、VMess、Trojan、Hysteria2、AnyTLS、TUIC、Naive、WireGuard、Shadowsocks、SOCKS4/5、HTTP/HTTPS 代理
 - 🧭 **智能分流**：国内流量直连，国外流量代理，自动识别主流 CN 应用/CDN
 - ⚡ **自动选择**：一键测速，自动选择最优节点
 - 📦 **分应用代理**：精细控制哪些应用走代理或绕过 VPN
@@ -52,8 +52,11 @@
 
 - 🔧 **三点工具菜单**：主界面右上角“三点”菜单提供 TCPing、URL Test、网速测试、流媒体解锁测试、隐藏超时/不可用节点、网络工具箱等功能
 - 🌐 **URL Test（默认）**：通过启动临时无头 sing-box 实例进行 HTTP 握手延迟测试，无需连接 VPN 即可测试所有节点真实连通性（作为 App 启动和刷新时的默认测试方式）
-- 🤖 **自动化测试流程**：支持配置后自动执行“拉节点 → URL Test → 延迟筛选 → 带宽测试 → 带宽筛选 → 解锁测试”，并弹出结果总览与节点详情
-- 🎬 **流媒体解锁测试**：集成 UnlockTests，可逐节点测试并展示可滚动结果明细
+- 🧠 **测试择优面板（全屏横屏）**：升级版自动化测试入口，支持横屏沉浸式配置、更多参数同屏展示、模式化测试与一键择优
+- 🧩 **测试模式系统**：内置 `聊天模式`（URL Test 延迟优先）与 `下载模式`（下行带宽优先，默认 10MB），支持自定义模式保存/删除
+- 🤖 **自动化测试流程（保留原能力）**：支持配置后自动执行“拉节点 → URL Test → 延迟筛选 → 带宽测试 → 带宽筛选 → 解锁测试”，并弹出结果总览与节点详情
+- 🎯 **智能择优规则**：支持延迟优先 / 上行优先 / 下行优先 / 解锁情况优先（解锁数或指定网站多选优先）
+- 🎬 **流媒体解锁测试**：集成 UnlockTests，可逐节点测试国外主流网站解锁情况并展示可滚动结果明细
 - ⚡ **Cloudflare 网速测试**：集成 Cloudflare Speed Test，支持下载/上传测速，实时显示速率
 - 📡 **TCPing 测试**：直接 TCP 连接测试节点可达性和延迟
 - 🗑️ **清理不可用节点**：一键隐藏超时/不可用节点（UI 过滤，不删除数据库数据）
@@ -116,7 +119,9 @@
 
 项目依赖 `libbox.aar`（sing-box Android 库），需放置于 `app/libs/` 目录。
 
-项目还包含 UnlockTests Android 二进制（用于流媒体解锁测试）：
+项目还包含 [UnlockTests](https://github.com/oneclickvirt/UnlockTests) Android so库（用于流媒体解锁测试）：
+
+这两个so库是由`ut-android-arm64`和`ut-android-armv7`两个二进制文件（[UnlockTests](https://github.com/oneclickvirt/UnlockTests) 项目编译得到，建议放到`app/src/main/assest/bin`目录下）复制到 jniLibs 对应 ABI 目录，然后挂到 preBuild，最后 build 自动迁移生成的！
 
 - `app/src/main/jniLibs/arm64-v8a/libut.so`
 - `app/src/main/jniLibs/armeabi-v7a/libut.so`
@@ -249,6 +254,7 @@ app/src/main/java/xyz/a202132/app/
 │   │   ├── DrawerContent.kt     # 侧边栏内容
 │   │   ├── NodeListDialog.kt    # 节点列表弹窗（含工具按钮）
 │   │   ├── NodeSelector.kt      # 节点选择器
+│   │   ├── TestPreferPanelDialog.kt # 测试择优面板（全屏横屏）
 │   │   └── TrafficStatsRow.kt   # 流量统计展示
 │   ├── dialogs/                  # 对话框
 │   │   ├── AboutDialog.kt       # 关于页面弹窗
@@ -363,32 +369,49 @@ const val NETWORK_TOOLS_JSON = """
 
 ---
 
-### 自动化测试
+### 测试择优面板（兼容自动化测试） 🚀
 
-自动化测试用于执行完整节点质量筛选流程，适合希望“打开 APP 后自动跑完整测试链路”的场景。
+“测试择优面板”是在原自动化测试基础上的增强入口，适合需要频繁调整筛选条件、快速换策略的场景。面板为**全屏横屏沉浸式**，参数更多、视野更大，调起来更顺手 ✨
 
-**流程（按顺序）**：
+**核心能力**：
+
+- 🧩 **测试模式**：支持保存/删除当前面板配置，内置 `聊天模式`、`下载模式`
+- 🎛️ **模式化执行**：首页中间按钮可先选模式，再执行测试并自动连接最优节点
+- 🔄 **启动自动执行**：开启后会执行“当前模式”测试（并 Toast 提示当前模式名）
+- 🗑️ **移除未达标**：快速隐藏不可用/超时/筛选失败节点（UI 过滤）
+- 🎯 **自动连接最优**：按当前模式的默认择优规则一键连接
+
+**自动化测试链路（按启用项执行）**：
 
 1. 拉取节点
 2. URL Test（真实连通延迟）
-3. 按延迟阈值筛选
-4. 逐节点下载带宽测试（支持 1/10/25/50MB）
-5. 按带宽阈值筛选
-6. 逐节点流媒体解锁测试（UnlockTests）
-7. 测试完成后弹出“符合要求节点”结果弹窗，可点进节点查看详情并复制结果
+3. 按延迟阈值筛选（可选）
+4. 逐节点带宽测试（下载/上传，支持下载测试流量大小 1/10/25/50MB）
+5. 按带宽阈值筛选（可选）
+6. 逐节点流媒体解锁测试（UnlockTests，可选）
+7. 弹出“自动化测试结果”弹窗（支持关键词搜索、节点详情、复制结果、自动连接最优）
 
-**配置项**（侧边栏 → 自动化测试）：
-- 启用自动化测试
-- 自动排除无效/高延迟节点
-- 延迟阈值（ms）
-- 自动进行带宽测试
-- 带宽阈值（Mbps）
-- 仅 Wi-Fi 执行带宽测试
-- 下载测试流量大小（1/10/25/50MB）
-- 自动测试流媒体解锁
-- 测试节点上限
+**择优规则（模式默认规则 + 手动选择）**：
 
-> ⚠️ 当启用自动化测试后，APP 启动时会优先执行自动化流程，不再先跑默认 URL Test，避免重复测试。
+- `延迟优先`：延迟越低越优（仅在当前模式启用了延迟测试且已有对应结果时生效）
+- `上行优先`：上传越高越优（仅在启用了上传测速且有结果时生效）
+- `下行优先`：下载越高越优（仅在启用了下载测速且有结果时生效）
+- `解锁情况优先`：支持两种子策略（仅在启用了解锁测试且有结果时生效）
+  - `按解锁数`：按总解锁数量排序
+  - `按指定网站（多选）`：按目标网站命中数优先，适合只关心少数站点的场景
+
+> 💡 当你只“保存了规则”但还没做对应测试时，APP 会提示先测试，不会拿无关历史数据“乱选节点”。
+
+**解锁优先（按指定网站）预设站点**
+
+预设站点来自 UnlockTests 实测输出整理（如 `ChatGPT`、`Claude`、`Gemini`、`Netflix`、`Disney+`、`TikTok`、`YouTube Region`、`Amazon Prime Video`、`MetaAI`、`SonyLiv` 等），统一维护在 `AppConfig.kt` 的 `UNLOCK_PRIORITY_PRESET_SITES` 中，方便后续扩展。
+
+**入口位置**：
+
+- 侧边栏 → `测试择优面板`
+- 首页中间按钮（弹模式选择后执行）
+
+> ⚠️ 开启“启动自动执行当前模式测试”后，APP 启动会优先执行当前模式测试流程，不再先跑默认 URL Test，避免重复测试。
 
 ---
 
@@ -547,18 +570,21 @@ AES 加密密钥存储在 Native (C++) 层，通过 XOR 混淆防止静态分析
 2. 使用以下 Python 脚本生成混淆后的字节数组：
 
 ```python
-key = "MySecretKey12345"  # 必须是 16 个字符
+key = "MySecretKey12345"  # 必须 16 字符
 SEED = 0x33
+
+assert len(key) == 16
 
 encrypted = []
 for i, c in enumerate(key):
-    encrypted.append(hex(ord(c) ^ (SEED + i)))
-    
-print("unsigned char encrypted_key[] = {")
+    encrypted.append(ord(c) ^ (SEED + i))
+
+print("static const uint8_t encoded[16] = {")
 for i, v in enumerate(encrypted):
-    print(f"        {v}, // '{key[i]}' ^ (0x33 + {i})")
-print("        0x00  // Null terminator")
+    end = "," if i < 15 else ""
+    print(f"    0x{v:02X}{end}")
 print("};")
+print(f"constexpr uint8_t seed = 0x{SEED:02X};")
 ```
 
 3. 将输出替换到 `native-lib.cpp` 中的 `encrypted_key` 数组
@@ -586,15 +612,6 @@ print("};")
 ```
 明文节点链接 → AES-GCM加密(生成随机IV) → 拼接(IV + 密文 + AuthTag) → Base64编码 → 返回给APP
 ```
-
-#### AES-GCM vs AES-ECB
-
-| 特性 | AES-ECB | AES-GCM ✅ |
-|------|---------|------------|
-| 需要 IV | ❌ | ✅ (12字节) |
-| 认证标签 | ❌ | ✅ (防篡改) |
-| 相同明文→相同密文 | ✅ (有风险) | ❌ (每次不同) |
-| 安全性 | 基础 | 更高 |
 
 #### Node.js 加密示例
 
@@ -739,6 +756,10 @@ Release 版本默认移除所有 `android.util.Log` 调用（包括 `Log.d`、`L
 - `vmess://` - VMess (Base64 JSON)
 - `trojan://` - Trojan
 - `hysteria2://` 或 `hy2://` - Hysteria2
+- `anytls://` - AnyTLS
+- `tuic://` - TUIC
+- `naive://` 或 `naive+https://` - Naive
+- `wireguard://` - WireGuard
 - `ss://` - Shadowsocks
 - `socks://` 或 `socks5://` - SOCKS5
 - `socks4://` - SOCKS4
@@ -1138,13 +1159,19 @@ target_link_options(native-lib PRIVATE "-Wl,-z,max-page-size=16384")
 
 ### Q: URL Test 全部显示超时
 **A**: 
-1. 确认 `network_security_config.xml` 中包含 `<domain>127.0.0.1</domain>` 的明文放行配置
+
+1. 确认 `network_security_config.xml` 中包含 `<domain includeSubdomains="true">127.0.0.1</domain>` 的明文放行配置
 2. URL Test 需要网络连接，确保 WiFi 或移动数据正常
 3. 检查 Logcat 中 `SingBoxCoreLog` 标签的日志，排查 sing-box 核心错误
 
 ### Q: 为什么开启自动化测试后，启动时没有先跑默认 URL Test？
 **A**:
 这是预期行为。启用自动化测试后，启动会直接进入“自动化流程”（其中包含 URL Test 阶段），避免重复测试。
+
+### Q: 为什么点击“自动连接最优”后没有立即选中节点？
+**A**:
+这是新的保护逻辑（更安全也更准确）✅  
+如果当前模式还没有完成对应类型的测试（例如你选了“下行优先”，但还没跑下行测速），系统会**先保存规则**并提示你执行测试，而不会使用无关结果或默认 URL Test 历史数据去误选节点。
 
 ### Q: 流媒体解锁测试使用什么组件？
 **A**:

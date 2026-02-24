@@ -8,6 +8,7 @@ import xyz.a202132.app.service.HeadlessPlatformInterface
 import xyz.a202132.app.util.SingBoxConfigGenerator
 import java.io.File
 import java.net.Socket
+import java.util.UUID
 
 /**
  * 流媒体解锁测试专用的临时无头 sing-box 管理器（单例串行）。
@@ -16,59 +17,112 @@ object UnlockTestManager {
 
     private const val TAG = "UnlockTestManager"
 
-    private var commandServer: io.nekohasekai.libbox.CommandServer? = null
-    private var isRunning = false
+    private val setupLock = Any()
+
+    class Session(
+        private val context: Context,
+        private val node: Node,
+        private val socksPort: Int
+    ) {
+        private var commandServer: io.nekohasekai.libbox.CommandServer? = null
+        private var isRunning = false
+        private val sessionId = "${socksPort}_${UUID.randomUUID().toString().take(8)}"
+
+        @Synchronized
+        fun start(): Boolean {
+            if (isRunning) {
+                Log.w(TAG, "Unlock test session already running")
+                return false
+            }
+
+            return try {
+                val workDir = File(context.filesDir, "sing-box-unlock-$sessionId")
+                if (!workDir.exists()) workDir.mkdirs()
+
+                synchronized(setupLock) {
+                    val options = io.nekohasekai.libbox.SetupOptions().apply {
+                        basePath = workDir.absolutePath
+                        workingPath = workDir.absolutePath
+                        tempPath = context.cacheDir.absolutePath
+                    }
+                    Libbox.setup(options)
+                }
+
+                val config = SingBoxConfigGenerator().generateTestConfig(node, socksPort)
+                val serverHandler = object : io.nekohasekai.libbox.CommandServerHandler {
+                    override fun serviceStop() {}
+                    override fun serviceReload() {}
+                    override fun getSystemProxyStatus(): io.nekohasekai.libbox.SystemProxyStatus {
+                        return io.nekohasekai.libbox.SystemProxyStatus()
+                    }
+                    override fun setSystemProxyEnabled(enabled: Boolean) {}
+                    override fun writeDebugMessage(message: String?) {
+                        Log.d(TAG, "Debug: $message")
+                    }
+                }
+
+                val platform = HeadlessPlatformInterface(context)
+                commandServer = Libbox.newCommandServer(serverHandler, platform)
+                commandServer?.start()
+                commandServer?.startOrReloadService(config, io.nekohasekai.libbox.OverrideOptions())
+
+                isRunning = true
+                waitSocksReady(socksPort)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start unlock test session", e)
+                cleanup()
+                false
+            }
+        }
+
+        @Synchronized
+        fun stop() {
+            if (!isRunning) return
+            cleanup()
+        }
+
+        private fun cleanup() {
+            try {
+                commandServer?.closeService()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing unlock test service", e)
+            }
+            try {
+                commandServer?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing unlock test command server", e)
+            }
+            commandServer = null
+            isRunning = false
+        }
+    }
+
+    fun createSession(context: Context, node: Node, socksPort: Int): Session {
+        return Session(context.applicationContext, node, socksPort)
+    }
+
+    // Backward-compatible singleton behavior for existing call sites.
+    private var legacySession: Session? = null
 
     @Synchronized
     fun start(context: Context, node: Node, socksPort: Int): Boolean {
-        if (isRunning) {
+        if (legacySession != null) {
             Log.w(TAG, "Unlock test instance already running")
             return false
         }
-
-        return try {
-            val workDir = File(context.filesDir, "sing-box-unlock")
-            if (!workDir.exists()) workDir.mkdirs()
-
-            val options = io.nekohasekai.libbox.SetupOptions().apply {
-                basePath = workDir.absolutePath
-                workingPath = workDir.absolutePath
-                tempPath = context.cacheDir.absolutePath
-            }
-            Libbox.setup(options)
-
-            val config = SingBoxConfigGenerator().generateTestConfig(node, socksPort)
-            val serverHandler = object : io.nekohasekai.libbox.CommandServerHandler {
-                override fun serviceStop() {}
-                override fun serviceReload() {}
-                override fun getSystemProxyStatus(): io.nekohasekai.libbox.SystemProxyStatus {
-                    return io.nekohasekai.libbox.SystemProxyStatus()
-                }
-                override fun setSystemProxyEnabled(enabled: Boolean) {}
-                override fun writeDebugMessage(message: String?) {
-                    Log.d(TAG, "Debug: $message")
-                }
-            }
-
-            val platform = HeadlessPlatformInterface(context)
-            commandServer = Libbox.newCommandServer(serverHandler, platform)
-            commandServer?.start()
-            commandServer?.startOrReloadService(config, io.nekohasekai.libbox.OverrideOptions())
-
-            isRunning = true
-            waitSocksReady(socksPort)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start unlock test instance", e)
-            cleanup()
-            false
+        val session = createSession(context, node, socksPort)
+        val started = session.start()
+        if (started) {
+            legacySession = session
         }
+        return started
     }
 
     @Synchronized
     fun stop() {
-        if (!isRunning) return
-        cleanup()
+        legacySession?.stop()
+        legacySession = null
     }
 
     private fun waitSocksReady(port: Int, retries: Int = 8, delayMs: Long = 500) {
@@ -81,18 +135,4 @@ object UnlockTestManager {
         }
     }
 
-    private fun cleanup() {
-        try {
-            commandServer?.closeService()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing unlock test service", e)
-        }
-        try {
-            commandServer?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing unlock test command server", e)
-        }
-        commandServer = null
-        isRunning = false
-    }
 }

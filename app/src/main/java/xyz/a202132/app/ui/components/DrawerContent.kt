@@ -2,7 +2,9 @@ package xyz.a202132.app.ui.components
 
 import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -30,11 +32,15 @@ import android.net.Uri
 import xyz.a202132.app.data.model.IPv6RoutingMode
 import xyz.a202132.app.ui.dialogs.AboutDialog
 import xyz.a202132.app.ui.theme.*
+import xyz.a202132.app.viewmodel.AutoTestLatencyMode
+import xyz.a202132.app.viewmodel.BestNodePriority
+import xyz.a202132.app.viewmodel.TestPreferMode
 
 @Composable
 fun DrawerContent(
     onCheckUpdate: () -> Unit,
     onOpenPerAppProxy: () -> Unit,
+    onOpenTestPreferPanel: () -> Unit,
     bypassLan: Boolean,
     onToggleBypassLan: (Boolean) -> Unit,
     ipv6RoutingMode: IPv6RoutingMode,
@@ -44,23 +50,45 @@ fun DrawerContent(
     onToggleBackupNode: (Boolean) -> Unit,
     autoTestEnabled: Boolean,
     autoTestFilterUnavailable: Boolean,
+    autoTestLatencyEnabled: Boolean,
+    autoTestLatencyMode: AutoTestLatencyMode,
     autoTestLatencyThresholdMs: Int,
     autoTestBandwidthEnabled: Boolean,
-    autoTestBandwidthThresholdMbps: Int,
+    autoTestBandwidthDownloadEnabled: Boolean,
+    autoTestBandwidthUploadEnabled: Boolean,
+    autoTestBandwidthDownloadThresholdMbps: Int,
+    autoTestBandwidthUploadThresholdMbps: Int,
     autoTestBandwidthWifiOnly: Boolean,
-    autoTestBandwidthSizeMb: Int,
+    autoTestBandwidthDownloadSizeMb: Int,
+    autoTestBandwidthUploadSizeMb: Int,
     autoTestUnlockEnabled: Boolean,
+    autoTestByRegion: Boolean,
     autoTestNodeLimit: Int,
     autoTestProgress: xyz.a202132.app.viewmodel.AutoTestProgress,
+    preferTestModes: List<TestPreferMode>,
+    preferTestSelectedModeId: String,
     onSetAutoTestEnabled: (Boolean) -> Unit,
     onSetAutoTestFilterUnavailable: (Boolean) -> Unit,
+    onSetAutoTestLatencyEnabled: (Boolean) -> Unit,
+    onSetAutoTestLatencyMode: (AutoTestLatencyMode) -> Unit,
     onSetAutoTestLatencyThresholdMs: (Int) -> Unit,
     onSetAutoTestBandwidthEnabled: (Boolean) -> Unit,
-    onSetAutoTestBandwidthThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthDownloadEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthUploadEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthDownloadThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthUploadThresholdMbps: (Int) -> Unit,
     onSetAutoTestBandwidthWifiOnly: (Boolean) -> Unit,
-    onSetAutoTestBandwidthSizeMb: (Int) -> Unit,
+    onSetAutoTestBandwidthDownloadSizeMb: (Int) -> Unit,
+    onSetAutoTestBandwidthUploadSizeMb: (Int) -> Unit,
     onSetAutoTestUnlockEnabled: (Boolean) -> Unit,
+    onSetAutoTestByRegion: (Boolean) -> Unit,
     onSetAutoTestNodeLimit: (Int) -> Unit,
+    onApplyPreferTestMode: (String) -> Unit,
+    onSaveCurrentPreferTestMode: (String) -> Unit,
+    onDeleteCurrentPreferTestMode: () -> Unit,
+    onHideUnqualifiedAutoTestNodes: () -> Unit,
+    onSelectBestNodeByPriority: (BestNodePriority, Boolean) -> Unit,
+    onUpdateCurrentPreferModePriority: (BestNodePriority) -> Unit,
     onStartAutomatedTest: () -> Unit,
     onCancelAutomatedTest: () -> Unit,
     onClose: () -> Unit
@@ -69,7 +97,6 @@ fun DrawerContent(
     var showIPv6Dialog by remember { mutableStateOf(false) }
     var showBackupNodeConfirmDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
-    var showAutoTestDialog by remember { mutableStateOf(false) }
     
     // 检查备用节点是否可用
     val backupNodeInfo = notice?.backupNodes
@@ -81,6 +108,7 @@ fun DrawerContent(
         modifier = Modifier
             .fillMaxHeight()
             .width(280.dp)
+            .verticalScroll(rememberScrollState())
             .padding(vertical = 24.dp)
     ) {
         // 标题
@@ -95,14 +123,6 @@ fun DrawerContent(
         Divider(color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(vertical = 8.dp))
         
         // 菜单项
-        DrawerMenuItem(
-            icon = Icons.Outlined.SystemUpdate,
-            title = "检查更新",
-            onClick = {
-                onCheckUpdate()
-                onClose()
-            }
-        )
 
         // 备用节点 (仅在有效时显示)
         if (isBackupNodeVisible) {
@@ -163,11 +183,23 @@ fun DrawerContent(
 
         DrawerMenuItem(
             icon = Icons.Outlined.Settings,
-            title = "自动化测试",
+            title = "测试择优面板",
             subtitle = autoTestProgress.message.ifBlank {
-                if (autoTestProgress.running) "运行中..." else "未开启"
+                if (autoTestProgress.running) "运行中..." else "未运行"
             },
-            onClick = { showAutoTestDialog = true }
+            onClick = {
+                onOpenTestPreferPanel()
+                onClose()
+            }
+        )
+
+        DrawerMenuItem(
+            icon = Icons.Outlined.SystemUpdate,
+            title = "检查更新",
+            onClick = {
+                onCheckUpdate()
+                onClose()
+            }
         )
         
         DrawerMenuItem(
@@ -209,7 +241,7 @@ fun DrawerContent(
             onClick = { showAboutDialog = true }
         )
         
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(12.dp))
         
         // 版本信息
         Text(
@@ -279,32 +311,6 @@ fun DrawerContent(
         AboutDialog(onDismiss = { showAboutDialog = false })
     }
 
-    if (showAutoTestDialog) {
-        AutoTestConfigDialog(
-            autoTestEnabled = autoTestEnabled,
-            autoTestFilterUnavailable = autoTestFilterUnavailable,
-            autoTestLatencyThresholdMs = autoTestLatencyThresholdMs,
-            autoTestBandwidthEnabled = autoTestBandwidthEnabled,
-            autoTestBandwidthThresholdMbps = autoTestBandwidthThresholdMbps,
-            autoTestBandwidthWifiOnly = autoTestBandwidthWifiOnly,
-            autoTestBandwidthSizeMb = autoTestBandwidthSizeMb,
-            autoTestUnlockEnabled = autoTestUnlockEnabled,
-            autoTestNodeLimit = autoTestNodeLimit,
-            autoTestProgress = autoTestProgress,
-            onSetAutoTestEnabled = onSetAutoTestEnabled,
-            onSetAutoTestFilterUnavailable = onSetAutoTestFilterUnavailable,
-            onSetAutoTestLatencyThresholdMs = onSetAutoTestLatencyThresholdMs,
-            onSetAutoTestBandwidthEnabled = onSetAutoTestBandwidthEnabled,
-            onSetAutoTestBandwidthThresholdMbps = onSetAutoTestBandwidthThresholdMbps,
-            onSetAutoTestBandwidthWifiOnly = onSetAutoTestBandwidthWifiOnly,
-            onSetAutoTestBandwidthSizeMb = onSetAutoTestBandwidthSizeMb,
-            onSetAutoTestUnlockEnabled = onSetAutoTestUnlockEnabled,
-            onSetAutoTestNodeLimit = onSetAutoTestNodeLimit,
-            onStartAutomatedTest = onStartAutomatedTest,
-            onCancelAutomatedTest = onCancelAutomatedTest,
-            onDismiss = { showAutoTestDialog = false }
-        )
-    }
 }
 
 @Composable
@@ -406,9 +412,6 @@ private fun DrawerMenuToggle(
     }
 }
 
-/**
- * IPv6 路由选项弹窗
- */
 @Composable
 private fun IPv6RoutingDialog(
     currentMode: IPv6RoutingMode,
@@ -431,23 +434,22 @@ private fun IPv6RoutingDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
-                
+
                 val options = listOf(
-                    IPv6RoutingMode.ONLY to "仅" to "仅使用 IPv6 (实验性)",
-                    IPv6RoutingMode.PREFER to "优先" to "优先使用 IPv6",
-                    IPv6RoutingMode.ENABLED to "启用" to "同时支持 IPv4 和 IPv6",
-                    IPv6RoutingMode.DISABLED to "禁用" to "不使用 IPv6 (默认)"
+                    Triple(IPv6RoutingMode.ONLY, "仅", "仅使用 IPv6（实验）"),
+                    Triple(IPv6RoutingMode.PREFER, "优先", "优先使用 IPv6"),
+                    Triple(IPv6RoutingMode.ENABLED, "启用", "同时支持 IPv4 和 IPv6"),
+                    Triple(IPv6RoutingMode.DISABLED, "禁用", "不使用 IPv6（默认）")
                 )
-                
-                options.forEach { (modePair, description) ->
-                    val (mode, label) = modePair
+
+                options.forEach { (mode, label, description) ->
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onModeSelected(mode) },
-                        color = if (currentMode == mode) 
-                            MaterialTheme.colorScheme.primaryContainer 
-                        else 
+                        color = if (currentMode == mode)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
                             androidx.compose.ui.graphics.Color.Transparent,
                         shape = RoundedCornerShape(8.dp)
                     ) {
@@ -488,44 +490,62 @@ private fun IPv6RoutingDialog(
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun AutoTestConfigDialog(
+private fun AutoTestConfigDialogV2(
     autoTestEnabled: Boolean,
     autoTestFilterUnavailable: Boolean,
+    autoTestLatencyMode: AutoTestLatencyMode,
     autoTestLatencyThresholdMs: Int,
     autoTestBandwidthEnabled: Boolean,
-    autoTestBandwidthThresholdMbps: Int,
+    autoTestBandwidthDownloadEnabled: Boolean,
+    autoTestBandwidthUploadEnabled: Boolean,
+    autoTestBandwidthDownloadThresholdMbps: Int,
+    autoTestBandwidthUploadThresholdMbps: Int,
     autoTestBandwidthWifiOnly: Boolean,
-    autoTestBandwidthSizeMb: Int,
+    autoTestBandwidthDownloadSizeMb: Int,
+    autoTestBandwidthUploadSizeMb: Int,
     autoTestUnlockEnabled: Boolean,
+    autoTestByRegion: Boolean,
     autoTestNodeLimit: Int,
     autoTestProgress: xyz.a202132.app.viewmodel.AutoTestProgress,
     onSetAutoTestEnabled: (Boolean) -> Unit,
     onSetAutoTestFilterUnavailable: (Boolean) -> Unit,
+    onSetAutoTestLatencyMode: (AutoTestLatencyMode) -> Unit,
     onSetAutoTestLatencyThresholdMs: (Int) -> Unit,
     onSetAutoTestBandwidthEnabled: (Boolean) -> Unit,
-    onSetAutoTestBandwidthThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthDownloadEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthUploadEnabled: (Boolean) -> Unit,
+    onSetAutoTestBandwidthDownloadThresholdMbps: (Int) -> Unit,
+    onSetAutoTestBandwidthUploadThresholdMbps: (Int) -> Unit,
     onSetAutoTestBandwidthWifiOnly: (Boolean) -> Unit,
-    onSetAutoTestBandwidthSizeMb: (Int) -> Unit,
+    onSetAutoTestBandwidthDownloadSizeMb: (Int) -> Unit,
+    onSetAutoTestBandwidthUploadSizeMb: (Int) -> Unit,
     onSetAutoTestUnlockEnabled: (Boolean) -> Unit,
+    onSetAutoTestByRegion: (Boolean) -> Unit,
     onSetAutoTestNodeLimit: (Int) -> Unit,
     onStartAutomatedTest: () -> Unit,
     onCancelAutomatedTest: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var latencyInput by remember { mutableStateOf(autoTestLatencyThresholdMs.toString()) }
-    var bandwidthInput by remember { mutableStateOf(autoTestBandwidthThresholdMbps.toString()) }
+    var downloadBandwidthThresholdInput by remember { mutableStateOf(autoTestBandwidthDownloadThresholdMbps.toString()) }
+    var uploadBandwidthThresholdInput by remember { mutableStateOf(autoTestBandwidthUploadThresholdMbps.toString()) }
     var nodeLimitInput by remember { mutableStateOf(autoTestNodeLimit.toString()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("自动化测试") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
                     text = if (autoTestProgress.running) {
                         "当前阶段: ${autoTestProgress.stage}\n${autoTestProgress.message}"
                     } else {
-                        "拉节点 -> URL Test -> 带宽测试 -> 解锁测试"
+                        "测试流程：拉节点 -> 延迟测试(TCPing/URL Test) -> 带宽测试(上下行) -> 流媒体解锁测试"
                     },
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -541,6 +561,25 @@ private fun AutoTestConfigDialog(
                     Text("自动排除无效/高延迟节点")
                 }
 
+                Text(
+                    text = "延迟测试方式",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = autoTestLatencyMode == AutoTestLatencyMode.URL_TEST,
+                        onClick = { onSetAutoTestLatencyMode(AutoTestLatencyMode.URL_TEST) },
+                        label = { Text("URL Test") }
+                    )
+                    FilterChip(
+                        selected = autoTestLatencyMode == AutoTestLatencyMode.TCPING,
+                        onClick = { onSetAutoTestLatencyMode(AutoTestLatencyMode.TCPING) },
+                        label = { Text("TCPing") }
+                    )
+                }
+
                 OutlinedTextField(
                     value = latencyInput,
                     onValueChange = {
@@ -554,20 +593,50 @@ private fun AutoTestConfigDialog(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = autoTestBandwidthEnabled, onCheckedChange = onSetAutoTestBandwidthEnabled)
-                    Text("自动进行下行带宽测试")
+                    Text("自动进行带宽测试")
                 }
 
                 OutlinedTextField(
-                    value = bandwidthInput,
+                    value = downloadBandwidthThresholdInput,
                     onValueChange = {
-                        bandwidthInput = it.filter { ch -> ch.isDigit() }
-                        bandwidthInput.toIntOrNull()?.let(onSetAutoTestBandwidthThresholdMbps)
+                        downloadBandwidthThresholdInput = it.filter { ch -> ch.isDigit() }
+                        downloadBandwidthThresholdInput.toIntOrNull()?.let(onSetAutoTestBandwidthDownloadThresholdMbps)
                     },
-                    label = { Text("带宽阈值(Mbps)") },
+                    label = { Text("下载带宽阈值(Mbps)") },
                     singleLine = true,
-                    enabled = autoTestBandwidthEnabled,
+                    enabled = autoTestBandwidthEnabled && autoTestBandwidthDownloadEnabled,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                OutlinedTextField(
+                    value = uploadBandwidthThresholdInput,
+                    onValueChange = {
+                        uploadBandwidthThresholdInput = it.filter { ch -> ch.isDigit() }
+                        uploadBandwidthThresholdInput.toIntOrNull()?.let(onSetAutoTestBandwidthUploadThresholdMbps)
+                    },
+                    label = { Text("上传带宽阈值(Mbps)") },
+                    singleLine = true,
+                    enabled = autoTestBandwidthEnabled && autoTestBandwidthUploadEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = autoTestBandwidthDownloadEnabled,
+                        onCheckedChange = onSetAutoTestBandwidthDownloadEnabled,
+                        enabled = autoTestBandwidthEnabled
+                    )
+                    Text("测试下载带宽")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = autoTestBandwidthUploadEnabled,
+                        onCheckedChange = onSetAutoTestBandwidthUploadEnabled,
+                        enabled = autoTestBandwidthEnabled
+                    )
+                    Text("测试上传带宽")
+                }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
@@ -575,7 +644,7 @@ private fun AutoTestConfigDialog(
                         onCheckedChange = onSetAutoTestBandwidthWifiOnly,
                         enabled = autoTestBandwidthEnabled
                     )
-                    Text("仅 Wi-Fi 执行下行带宽测试")
+                    Text("仅 Wi-Fi 下执行带宽测试")
                 }
 
                 Text(
@@ -583,13 +652,31 @@ private fun AutoTestConfigDialog(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     listOf(1, 10, 25, 50).forEach { mb ->
                         FilterChip(
-                            selected = autoTestBandwidthSizeMb == mb,
-                            onClick = { onSetAutoTestBandwidthSizeMb(mb) },
+                            selected = autoTestBandwidthDownloadSizeMb == mb,
+                            onClick = { onSetAutoTestBandwidthDownloadSizeMb(mb) },
                             label = { Text("${mb}MB") },
-                            enabled = autoTestBandwidthEnabled
+                            enabled = autoTestBandwidthEnabled && autoTestBandwidthDownloadEnabled
+                        )
+                    }
+                }
+
+                Text(
+                    text = "上传测试流量大小",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    listOf(1, 10, 25, 50).forEach { mb ->
+                        FilterChip(
+                            selected = autoTestBandwidthUploadSizeMb == mb,
+                            onClick = { onSetAutoTestBandwidthUploadSizeMb(mb) },
+                            label = { Text("${mb}MB") },
+                            enabled = autoTestBandwidthEnabled && autoTestBandwidthUploadEnabled
                         )
                     }
                 }
@@ -599,15 +686,22 @@ private fun AutoTestConfigDialog(
                     Text("自动测试流媒体解锁")
                 }
 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autoTestByRegion, onCheckedChange = onSetAutoTestByRegion)
+                    Text("分地区进行测试")
+                }
+
                 OutlinedTextField(
                     value = nodeLimitInput,
                     onValueChange = {
                         nodeLimitInput = it.filter { ch -> ch.isDigit() }
                         nodeLimitInput.toIntOrNull()?.let(onSetAutoTestNodeLimit)
                     },
-                    label = { Text("测试节点上限") },
+                    label = { Text(if (autoTestByRegion) "每个地区测试节点上限" else "测试节点上限") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 60.dp)
                 )
             }
         },

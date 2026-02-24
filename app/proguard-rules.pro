@@ -29,6 +29,13 @@
 -dontwarn okio.**
 -keep class okhttp3.** { *; }
 
+# SQLCipher (JNI depends on internal field/method names; do not obfuscate)
+-keep class net.sqlcipher.** { *; }
+-dontwarn net.sqlcipher.**
+# Future-proof if migrating to newer sqlcipher-android package names
+-keep class net.zetetic.database.sqlcipher.** { *; }
+-dontwarn net.zetetic.database.sqlcipher.**
+
 # Coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
 -keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}

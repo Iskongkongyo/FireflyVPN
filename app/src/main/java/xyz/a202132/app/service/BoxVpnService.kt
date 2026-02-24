@@ -18,13 +18,24 @@ import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.util.SingBoxConfigGenerator
 // RuleSetManager removed
 import java.io.File
-import java.io.FileOutputStream
+import java.lang.reflect.Method
 import kotlinx.coroutines.flow.first
 
 /**
  * VPN服务 - 使用sing-box核心
  */
 class BoxVpnService : VpnService() {
+    private enum class TrafficSource {
+        SING_BOX_STATUS,
+        TRAFFIC_STATS
+    }
+
+    private data class ParsedTrafficStatus(
+        val uploadSpeed: Long,
+        val downloadSpeed: Long,
+        val uploadTotal: Long,
+        val downloadTotal: Long
+    )
     
     companion object {
         private const val TAG = "BoxVpnService"
@@ -163,10 +174,11 @@ class BoxVpnService : VpnService() {
 
                 // 3. 生成sing-box配置
                 val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan, ipv6Mode)
-                val configFile = saveConfigToFile(config)
+                deleteLegacyConfigFile()
+                logConfigForDebug(config)
                 
                 // 初始化 libbox
-                initializeLibbox(configFile.absolutePath, nodeName)
+                initializeLibbox(config, nodeName)
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start VPN", e)
@@ -178,7 +190,7 @@ class BoxVpnService : VpnService() {
         }
     }
     
-    private suspend fun initializeLibbox(configPath: String, nodeName: String) {
+    private suspend fun initializeLibbox(configContent: String, nodeName: String) {
         withContext(Dispatchers.IO) {
             try {
                 // 设置工作目录
@@ -196,8 +208,6 @@ class BoxVpnService : VpnService() {
                 Libbox.setup(options)
                 
                 // 读取配置文件内容
-                val configFile = File(configPath)
-                val configContent = configFile.readText()
                 Log.d(TAG, "Config content length: ${configContent.length}")
                 
                 // 创建平台接口并启动网络监控
@@ -230,6 +240,7 @@ class BoxVpnService : VpnService() {
                 // 启动或重载 sing-box 服务实例
                 val overrideOptions = io.nekohasekai.libbox.OverrideOptions()
                 commandServer?.startOrReloadService(configContent, overrideOptions)
+                deleteLegacyConfigFile()
                 
                 // 启动流量监控和组状态监控
                 startCommandClient()
@@ -255,8 +266,12 @@ class BoxVpnService : VpnService() {
     // Command Client 相关
     private var commandClientJob: kotlinx.coroutines.Job? = null
     private var commandClient: io.nekohasekai.libbox.CommandClient? = null
+    @Volatile private var currentTrafficSource: TrafficSource = TrafficSource.TRAFFIC_STATS
+    @Volatile private var lastSingBoxTrafficStatusAt: Long = 0L
+    private var statusShapeLogged = false
     
     private fun startCommandClient() {
+        statusShapeLogged = false
         commandClientJob = serviceScope.launch {
             try {
                 delay(1000) // 等待服务启动
@@ -269,7 +284,7 @@ class BoxVpnService : VpnService() {
                 
                 val options = io.nekohasekai.libbox.CommandClientOptions().apply {
                     addCommand(Libbox.CommandGroup) // 监听组变化（延迟测试结果）
-                    statusInterval = 10_000_000_000L // 10秒 (对于组状态不需要太频繁)
+                    statusInterval = 1_000_000_000L // 1秒，用于流量状态更新
                 }
                 
                 val handler = object : io.nekohasekai.libbox.CommandClientHandler {
@@ -279,7 +294,10 @@ class BoxVpnService : VpnService() {
                     override fun disconnected(message: String?) {
                         Log.d(TAG, "Command client disconnected: $message")
                     }
-                    override fun writeStatus(message: io.nekohasekai.libbox.StatusMessage?) {}
+                    override fun writeStatus(message: io.nekohasekai.libbox.StatusMessage?) {
+                        if (message == null) return
+                        handleSingBoxTrafficStatus(message)
+                    }
                     
                     override fun writeGroups(message: io.nekohasekai.libbox.OutboundGroupIterator?) {
                         if (message == null) return
@@ -385,6 +403,8 @@ class BoxVpnService : VpnService() {
     private var baseRxBytes = 0L
     
     private fun startTrafficMonitor() {
+        currentTrafficSource = TrafficSource.TRAFFIC_STATS
+        Log.i(TAG, "Traffic source -> ${TrafficSource.TRAFFIC_STATS.name} (hybrid init)")
         // 记录连接开始时的流量基准
         val uid = android.os.Process.myUid()
         baseTxBytes = android.net.TrafficStats.getUidTxBytes(uid)
@@ -399,11 +419,20 @@ class BoxVpnService : VpnService() {
                 
                 try {
                     val currentTime = System.currentTimeMillis()
+                    val singBoxFresh = lastSingBoxTrafficStatusAt > 0L && (currentTime - lastSingBoxTrafficStatusAt) <= 3500L
                     val currentTxBytes = android.net.TrafficStats.getUidTxBytes(uid)
                     val currentRxBytes = android.net.TrafficStats.getUidRxBytes(uid)
                     
                     if (currentTxBytes != android.net.TrafficStats.UNSUPPORTED.toLong() &&
                         currentRxBytes != android.net.TrafficStats.UNSUPPORTED.toLong()) {
+                        if (singBoxFresh) {
+                            // 保持基准更新，避免切回 TrafficStats 时速度突刺
+                            lastTxBytes = currentTxBytes
+                            lastRxBytes = currentRxBytes
+                            lastUpdateTime = currentTime
+                            continue
+                        }
+                        updateTrafficSource(TrafficSource.TRAFFIC_STATS, "sing-box status stale")
                         
                         val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
                         val activeNetwork = cm.activeNetwork
@@ -455,36 +484,144 @@ class BoxVpnService : VpnService() {
             }
         }
         
-        Log.d(TAG, "Traffic monitor started using TrafficStats")
+        Log.d(TAG, "Traffic monitor started in hybrid mode (prefer sing-box status, fallback TrafficStats)")
     }
     
     private fun stopTrafficMonitor() {
         trafficMonitorJob?.cancel()
         trafficMonitorJob = null
+        lastSingBoxTrafficStatusAt = 0L
+        currentTrafficSource = TrafficSource.TRAFFIC_STATS
         Log.d(TAG, "Traffic monitor stopped")
     }
+
+    private fun handleSingBoxTrafficStatus(message: io.nekohasekai.libbox.StatusMessage) {
+        try {
+            val parsed = parseTrafficStatusReflectively(message)
+            if (parsed == null) {
+                if (!statusShapeLogged) {
+                    statusShapeLogged = true
+                    val methods = message.javaClass.methods
+                        .map(Method::getName)
+                        .distinct()
+                        .sorted()
+                        .take(80)
+                    Log.w(TAG, "Traffic source fallback to TRAFFIC_STATS: unable to parse StatusMessage traffic fields. methods=$methods")
+                }
+                return
+            }
+
+            lastSingBoxTrafficStatusAt = System.currentTimeMillis()
+            updateTrafficSource(TrafficSource.SING_BOX_STATUS, "writeStatus")
+
+            uploadSpeed = parsed.uploadSpeed.coerceAtLeast(0L)
+            downloadSpeed = parsed.downloadSpeed.coerceAtLeast(0L)
+            uploadTotal = parsed.uploadTotal.coerceAtLeast(0L)
+            downloadTotal = parsed.downloadTotal.coerceAtLeast(0L)
+
+            serviceScope.launch(Dispatchers.Main) {
+                ServiceManager.notifyStateChange()
+                currentNodeName?.let { updateNotification(it) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse sing-box status traffic, fallback TrafficStats: ${e.message}")
+        }
+    }
+
+    private fun updateTrafficSource(source: TrafficSource, reason: String) {
+        if (currentTrafficSource == source) return
+        currentTrafficSource = source
+        Log.i(TAG, "Traffic source -> ${source.name} ($reason)")
+    }
+
+    private fun parseTrafficStatusReflectively(status: Any): ParsedTrafficStatus? {
+        extractTrafficStatusFromObject(status)?.let { return it }
+
+        val nestedMethods = status.javaClass.methods
+            .filter { it.parameterCount == 0 && it.returnType != Void.TYPE }
+            .filter { it.declaringClass != Any::class.java }
+            .filter {
+                val n = it.name.lowercase()
+                n.contains("traffic") || n.contains("stats") || n.contains("network") || n.contains("status")
+            }
+
+        for (method in nestedMethods) {
+            val nested = runCatching { method.invoke(status) }.getOrNull() ?: continue
+            extractTrafficStatusFromObject(nested)?.let { return it }
+        }
+        return null
+    }
+
+    private fun extractTrafficStatusFromObject(obj: Any): ParsedTrafficStatus? {
+        val upSpeed = readNumberByNames(
+            obj,
+            "uploadSpeed", "uplinkSpeed", "upSpeed", "txSpeed", "upRate", "uplink", "uplinkBps", "uploadBps"
+        )
+        val downSpeed = readNumberByNames(
+            obj,
+            "downloadSpeed", "downlinkSpeed", "downSpeed", "rxSpeed", "downRate", "downlink", "downlinkBps", "downloadBps"
+        )
+        val upTotal = readNumberByNames(
+            obj,
+            "uploadTotal", "uplinkTotal", "upTotal", "txTotal", "totalUpload", "totalUp", "uploadTotalBytes", "uplinkTotalBytes"
+        )
+        val downTotal = readNumberByNames(
+            obj,
+            "downloadTotal", "downlinkTotal", "downTotal", "rxTotal", "totalDownload", "totalDown", "downloadTotalBytes", "downlinkTotalBytes"
+        )
+
+        if (upSpeed == null || downSpeed == null || upTotal == null || downTotal == null) return null
+        return ParsedTrafficStatus(upSpeed, downSpeed, upTotal, downTotal)
+    }
+
+    private fun readNumberByNames(target: Any, vararg names: String): Long? {
+        val methods = target.javaClass.methods
+        for (name in names) {
+            val lower = name.lowercase()
+            val method = methods.firstOrNull { m ->
+                if (m.parameterCount != 0 || m.returnType == Void.TYPE) return@firstOrNull false
+                val mn = m.name.lowercase()
+                mn == lower || mn == "get$lower"
+            }
+            if (method != null) {
+                val value = runCatching { method.invoke(target) }.getOrNull()
+                (value as? Number)?.toLong()?.let { return it }
+            }
+
+            val field = runCatching {
+                target.javaClass.declaredFields.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            }.getOrNull()
+            if (field != null) {
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(target)
+                }.getOrNull()
+                (value as? Number)?.toLong()?.let { return it }
+            }
+        }
+        return null
+    }
     
-    private fun saveConfigToFile(config: String): File {
-        val configDir = File(filesDir, "sing-box")
-        if (!configDir.exists()) {
-            configDir.mkdirs()
-        }
-        
-        val configFile = File(configDir, "config.json")
-        FileOutputStream(configFile).use { fos ->
-            fos.write(config.toByteArray())
-        }
-        
-        Log.d(TAG, "Config saved to: ${configFile.absolutePath}")
+    private fun logConfigForDebug(config: String) {
         // 避免日志过长，只打印前1000字符
         if (config.length > 1000) {
              Log.d(TAG, "Config content (truncated): ${config.substring(0, 1000)}...")
         } else {
              Log.d(TAG, "Config content: $config")
         }
-        return configFile
     }
     
+    private fun deleteLegacyConfigFile() {
+        try {
+            val configFile = File(File(filesDir, "sing-box"), "config.json")
+            if (configFile.exists() && !configFile.delete()) {
+                Log.w(TAG, "Failed to delete legacy config file: ${configFile.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error deleting legacy config file", e)
+        }
+    }
+
     private fun stopVpn() {
         val stopStartTime = System.currentTimeMillis()
         Log.d(TAG, "Stopping VPN - start")
@@ -582,9 +719,10 @@ class BoxVpnService : VpnService() {
                     }
                     
                     val config = configGenerator.generateConfig(allNodes, selectedNodeId, proxyMode, bypassLan, ipv6Mode)
-                    val configFile = saveConfigToFile(config)
-                    
-                    initializeLibbox(configFile.absolutePath, savedNodeName)
+                    deleteLegacyConfigFile()
+                    logConfigForDebug(config)
+
+                    initializeLibbox(config, savedNodeName)
                 }
             }
         }
@@ -622,6 +760,7 @@ class BoxVpnService : VpnService() {
                 Log.e(TAG, "Error closing commandServer", e)
             }
             commandServer = null
+            deleteLegacyConfigFile()
             
             Log.d(TAG, "Resources cleaned up")
         } catch (e: Exception) {

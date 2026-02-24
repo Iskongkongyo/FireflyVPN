@@ -11,8 +11,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +43,21 @@ fun NodeListDialog(
     onRefresh: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    var showSearch by remember { mutableStateOf(false) }
+    var keyword by remember { mutableStateOf("") }
+    val filteredNodes = remember(nodes, keyword) {
+        val query = keyword.trim()
+        if (query.isBlank()) {
+            nodes
+        } else {
+            nodes.filter { node ->
+                node.getDisplayName().contains(query, ignoreCase = true) ||
+                    node.name.contains(query, ignoreCase = true) ||
+                    node.country?.contains(query, ignoreCase = true) == true
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -80,6 +100,21 @@ fun NodeListDialog(
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        IconButton(
+                            onClick = {
+                                showSearch = !showSearch
+                                if (!showSearch) {
+                                    keyword = ""
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "搜索",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
                         // 刷新按钮
                         IconButton(
                             onClick = onRefresh,
@@ -112,6 +147,25 @@ fun NodeListDialog(
                 } else {
                     Divider(color = MaterialTheme.colorScheme.outline)
                 }
+
+                if (showSearch) {
+                    OutlinedTextField(
+                        value = keyword,
+                        onValueChange = { keyword = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        singleLine = true,
+                        placeholder = { Text("输入关键字检索节点") },
+                        trailingIcon = {
+                            if (keyword.isNotEmpty()) {
+                                IconButton(onClick = { keyword = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = "清空")
+                                }
+                            }
+                        }
+                    )
+                }
                 
                 // 节点列表
                 if (nodes.isEmpty()) {
@@ -128,17 +182,32 @@ fun NodeListDialog(
                         )
                     }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(nodes) { node ->
-                            NodeListItem(
-                                node = node,
-                                isSelected = node.id == selectedNodeId,
-                                onClick = { onNodeSelected(node) }
+                    if (filteredNodes.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "未找到匹配节点",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 16.sp
                             )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(filteredNodes) { node ->
+                                NodeListItem(
+                                    node = node,
+                                    isSelected = node.id == selectedNodeId,
+                                    onClick = { onNodeSelected(node) }
+                                )
+                            }
                         }
                     }
                 }

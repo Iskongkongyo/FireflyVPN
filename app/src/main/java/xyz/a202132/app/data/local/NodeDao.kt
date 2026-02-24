@@ -32,9 +32,15 @@ interface NodeDao {
     
     @Query("DELETE FROM nodes")
     suspend fun deleteAllNodes()
+
+    @Transaction
+    suspend fun replaceAllNodes(nodes: List<Node>) {
+        deleteAllNodes()
+        insertNodes(nodes)
+    }
     
     @Query("UPDATE nodes SET latency = :latency, isAvailable = :isAvailable, lastTestedAt = :testedAt WHERE id = :nodeId")
-    suspend fun updateLatency(nodeId: String, latency: Int, isAvailable: Boolean, testedAt: Long)
+    suspend fun updateLatency(nodeId: String, latency: Int, isAvailable: Boolean, testedAt: Long): Int
 
     @Query("UPDATE nodes SET downloadMbps = :downloadMbps, uploadMbps = :uploadMbps, autoTestedAt = :testedAt WHERE id = :nodeId")
     suspend fun updateBandwidth(nodeId: String, downloadMbps: Float, uploadMbps: Float, testedAt: Long)
