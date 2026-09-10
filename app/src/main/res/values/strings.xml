@@ -7,13 +7,11 @@
     <string name="disconnect">断开</string>
     <string name="connecting">连接中…</string>
     <string name="disconnecting">断开中…</string>
-    <string name="connected">已连接</string>
     <string name="not_connected">未连接</string>
     <string name="tap_to_connect">点击连接</string>
     <string name="tap_to_disconnect">点击断开</string>
     
     <!-- Node -->
-    <string name="current_node">当前节点</string>
     <string name="auto_select">自动选择</string>
     <string name="node_list">节点列表</string>
     <string name="no_nodes">暂无可用节点</string>
@@ -59,4 +57,68 @@
     <string name="cancel">取消</string>
     <string name="close">关闭</string>
     <string name="loading">加载中…</string>
+
+    <!-- Rule Management -->
+    <string name="rule_management_title">规则管理</string>
+    <string name="rule_management_subtitle">管理分流、广告拦截与网络规则</string>
+    <string name="rule_category_system">系统规则</string>
+    <string name="rule_category_ad_block">广告拦截</string>
+    <string name="rule_category_network">网络规则</string>
+    <string name="rule_system_always_enabled">始终启用</string>
+    <string name="rule_enabled">已启用</string>
+    <string name="rule_disabled">已停用</string>
+    <string name="rule_reconnect_hint">规则开关将在下次连接 VPN 时生效</string>
+    <string name="rule_overlap_warning">同时启用两份广告规则可能产生重复匹配，并增加内存占用。</string>
+    <string name="rule_update">更新</string>
+    <string name="rule_restore">恢复内置版本</string>
+    <string name="rule_update_success">规则更新成功</string>
+    <string name="rule_update_failed">规则更新失败，当前版本未受影响</string>
+    <string name="rule_restore_success">已恢复内置规则</string>
+    <string name="rule_restore_failed">恢复失败，当前版本未受影响</string>
+    <string name="rule_toggle_failed">设置保存失败</string>
+    <string name="rule_initialize_failed">部分内置规则文件初始化失败</string>
+    <string name="rule_stage_checking">检查规则…</string>
+    <string name="rule_stage_downloading">下载中…</string>
+    <string name="rule_stage_verifying">校验中…</string>
+    <string name="rule_stage_restoring">恢复中…</string>
+    <string name="rule_detail_title">规则详情</string>
+    <string name="rule_detail_type">类型</string>
+    <string name="rule_detail_action">动作</string>
+    <string name="rule_detail_format">格式</string>
+    <string name="rule_detail_file_size">文件大小</string>
+    <string name="rule_detail_updated_at">文件时间</string>
+    <string name="rule_detail_source">来源</string>
+    <string name="rule_detail_purpose">用途</string>
+    <string name="rule_format_srs">Sing-box 二进制规则集（SRS）</string>
+    <string name="rule_format_builtin">内置路由规则</string>
+    <string name="rule_action_direct">直连</string>
+    <string name="rule_action_reject">拒绝</string>
+    <string name="rule_type_domain">域名规则集</string>
+    <string name="rule_type_ip">IP 规则集</string>
+    <string name="rule_type_rule_set">复合规则集</string>
+    <string name="rule_type_network">UDP 443 网络规则</string>
+    <string name="rule_not_applicable">—</string>
+    <string name="rule_restore_confirm_title">恢复内置规则？</string>
+    <string name="rule_restore_confirm_message">当前下载的规则文件会替换为随应用提供的版本。</string>
+
+    <string name="rule_geosite_cn_name">中国域名</string>
+    <string name="rule_geosite_cn_summary">SMART 模式下让中国大陆域名直连</string>
+    <string name="rule_geosite_cn_source">SagerNet sing-geosite</string>
+    <string name="rule_geosite_cn_purpose">用于智能分流的中国大陆域名匹配</string>
+    <string name="rule_geoip_cn_name">中国 IP</string>
+    <string name="rule_geoip_cn_summary">SMART 模式下让中国大陆 IP 直连</string>
+    <string name="rule_geoip_cn_source">SagerNet sing-geoip</string>
+    <string name="rule_geoip_cn_purpose">用于智能分流的中国大陆 IP 匹配</string>
+    <string name="rule_anti_ad_name">anti-AD</string>
+    <string name="rule_anti_ad_summary">轻量广告与跟踪域名拦截，默认启用</string>
+    <string name="rule_anti_ad_source">anti-AD 社区规则</string>
+    <string name="rule_anti_ad_purpose">拦截常见广告、跟踪与恶意域名</string>
+    <string name="rule_adrules_name">AdRules</string>
+    <string name="rule_adrules_summary">更广泛的广告规则，默认停用</string>
+    <string name="rule_adrules_source">Cats-Team AdRules</string>
+    <string name="rule_adrules_purpose">补充广告与跟踪域名拦截</string>
+    <string name="rule_block_quic_name">阻止 QUIC</string>
+    <string name="rule_block_quic_summary">拒绝 UDP 443，使连接回退到 TCP</string>
+    <string name="rule_block_quic_source">FireflyVPN 内置规则</string>
+    <string name="rule_block_quic_purpose">在部分网络环境下改善代理兼容性与可控性</string>
 </resources>

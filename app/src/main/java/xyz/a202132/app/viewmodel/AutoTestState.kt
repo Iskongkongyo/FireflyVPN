@@ -56,8 +56,10 @@ data class TestPreferMode(
     val byRegion: Boolean = false,
     val nodeLimit: Int = 20,
     val defaultPriority: BestNodePriority = BestNodePriority.LATENCY,
+    val priorityOrder: List<BestNodePriority> = BestNodePriority.entries.toList(),
     val unlockPriorityMode: UnlockPriorityMode = UnlockPriorityMode.COUNT,
-    val unlockPriorityTargetSiteIds: List<String> = emptyList()
+    val unlockPriorityTargetSiteIds: List<String> = emptyList(),
+    val autoConnectBest: Boolean = false
 ) {
     fun toAutoTestConfig(autoRunEnabled: Boolean): AutoTestConfig = AutoTestConfig(
         enabled = autoRunEnabled,
@@ -94,6 +96,12 @@ fun builtInPreferTestModes(): List<TestPreferMode> = listOf(
         bandwidthEnabled = false,
         unlockEnabled = false,
         defaultPriority = BestNodePriority.LATENCY,
+        priorityOrder = listOf(
+            BestNodePriority.LATENCY,
+            BestNodePriority.UPLOAD,
+            BestNodePriority.DOWNLOAD,
+            BestNodePriority.UNLOCK_COUNT
+        ),
         nodeLimit = 50
     ),
     TestPreferMode(
@@ -112,6 +120,12 @@ fun builtInPreferTestModes(): List<TestPreferMode> = listOf(
         bandwidthUploadSizeMb = 10,
         unlockEnabled = false,
         defaultPriority = BestNodePriority.DOWNLOAD,
+        priorityOrder = listOf(
+            BestNodePriority.DOWNLOAD,
+            BestNodePriority.LATENCY,
+            BestNodePriority.UPLOAD,
+            BestNodePriority.UNLOCK_COUNT
+        ),
         nodeLimit = 30
     )
 )
@@ -120,10 +134,32 @@ fun normalizePreferTestModes(raw: List<TestPreferMode>): List<TestPreferMode> {
     val builtIns = builtInPreferTestModes()
     val custom = raw.filterNot { it.builtIn || it.id == BUILTIN_PREFER_MODE_CHAT || it.id == BUILTIN_PREFER_MODE_DOWNLOAD }
     val mergedBuiltIns = builtIns.map { builtin ->
-        raw.firstOrNull { it.id == builtin.id }?.copy(builtIn = true, name = builtin.name) ?: builtin
+        raw.firstOrNull { it.id == builtin.id }
+            ?.normalizePriorityOrder()
+            ?.copy(builtIn = true, name = builtin.name)
+            ?: builtin
     }
-    return mergedBuiltIns + custom
+    return mergedBuiltIns + custom.map(TestPreferMode::normalizePriorityOrder)
 }
+
+fun TestPreferMode.normalizePriorityOrder(): TestPreferMode {
+    val normalized = buildList {
+        priorityOrder.distinct().forEach(::add)
+        if (defaultPriority !in this) add(0, defaultPriority)
+        BestNodePriority.entries.filterNot { it in this }.forEach(::add)
+    }
+    return copy(defaultPriority = normalized.first(), priorityOrder = normalized)
+}
+
+fun TestPreferMode.supportsPriority(priority: BestNodePriority): Boolean = when (priority) {
+    BestNodePriority.LATENCY -> latencyEnabled
+    BestNodePriority.UPLOAD -> bandwidthEnabled && bandwidthUploadEnabled
+    BestNodePriority.DOWNLOAD -> bandwidthEnabled && bandwidthDownloadEnabled
+    BestNodePriority.UNLOCK_COUNT -> unlockEnabled
+}
+
+fun TestPreferMode.activePriorityOrder(): List<BestNodePriority> =
+    normalizePriorityOrder().priorityOrder.filter(::supportsPriority)
 
 enum class AutoTestStage {
     IDLE,

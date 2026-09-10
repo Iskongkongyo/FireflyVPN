@@ -2,7 +2,9 @@ package xyz.a202132.app.ui.dialogs
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -12,68 +14,70 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import xyz.a202132.app.BuildConfig
-import xyz.a202132.app.AppConfig
+import xyz.a202132.app.R
 import xyz.a202132.app.ui.theme.Primary
 
 @Composable
 fun AboutDialog(
+    githubUrl: String,
+    updateCheckAvailable: Boolean,
+    onCheckUpdate: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val githubUrl = AppConfig.GITHUB_URL
     val releasesUrl = if (githubUrl.isNotBlank()) "$githubUrl/releases" else ""
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnClickOutside = true
-        )
-    ) {
-        val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-        val navigationBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        val verticalSafePadding = maxOf(statusBarTop, navigationBarBottom) + 12.dp
+    BackHandler(onBack = onDismiss)
 
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                )
-                .padding(
-                    start = 14.dp,
-                    top = verticalSafePadding,
-                    end = 14.dp,
-                    bottom = verticalSafePadding
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            val isLargeScreen = maxWidth >= 600.dp
-            val dialogWidthFraction = if (isLargeScreen) 0.58f else 1f
-            val dialogMaxHeight = if (isLargeScreen) maxHeight * 0.94f else maxHeight
-            val contentHorizontalPadding = if (isLargeScreen) 28.dp else 18.dp
-            val contentVerticalPadding = if (isLargeScreen) 26.dp else 16.dp
-            val iconSize = if (isLargeScreen) 88.dp else 64.dp
-            val sectionSpacer = if (isLargeScreen) 24.dp else 14.dp
-            val itemSpacer = if (isLargeScreen) 16.dp else 10.dp
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val navigationBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val verticalSafePadding = maxOf(statusBarTop, navigationBarBottom) + 12.dp
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss
+            )
+            .padding(
+                start = 14.dp,
+                top = verticalSafePadding,
+                end = 14.dp,
+                bottom = verticalSafePadding
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        val isLargeScreen = maxWidth >= 600.dp
+        val dialogWidthFraction = if (isLargeScreen) 0.58f else 1f
+        // Wrap short content, but allow long content to use the entire safe area before
+        // falling back to internal scrolling. This keeps the action buttons visible whenever
+        // the device has enough vertical space.
+        val dialogMaxHeight = maxHeight
+        val contentHorizontalPadding = if (isLargeScreen) 28.dp else 18.dp
+        val contentVerticalPadding = if (isLargeScreen) 26.dp else 16.dp
+        val iconSize = if (isLargeScreen) 88.dp else 64.dp
+        val sectionSpacer = if (isLargeScreen) 24.dp else 14.dp
+        val itemSpacer = if (isLargeScreen) 16.dp else 10.dp
 
             Surface(
                 modifier = Modifier
@@ -286,6 +290,29 @@ fun AboutDialog(
 
                     Spacer(modifier = Modifier.height(sectionSpacer))
 
+                    if (updateCheckAvailable) {
+                        OutlinedButton(
+                            onClick = onCheckUpdate,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.SystemUpdate,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.check_update),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
                     // Close button
                     Button(
                         onClick = onDismiss,
@@ -302,6 +329,5 @@ fun AboutDialog(
                     }
                 }
             }
-        }
     }
 }

@@ -58,6 +58,7 @@ import kotlinx.coroutines.withContext
 import xyz.a202132.app.AppConfig
 import xyz.a202132.app.SpeedTestSize
 import xyz.a202132.app.data.model.Node
+import xyz.a202132.app.network.NetworkClient
 import xyz.a202132.app.network.SpeedTestResult
 import xyz.a202132.app.network.SpeedTestService
 import xyz.a202132.app.network.UnlockTestManager
@@ -102,7 +103,11 @@ fun SpeedTestDialog(
 
     val sizes = remember { AppConfig.getSpeedTestSizes() }
     var selectedSize by remember {
-        mutableStateOf(sizes.firstOrNull() ?: SpeedTestSize("10MB", 10_000_000))
+        mutableStateOf(
+            sizes.firstOrNull { it.bytes == 25_000_000L }
+                ?: sizes.lastOrNull()
+                ?: SpeedTestSize("25MB", 25_000_000)
+        )
     }
     var selectedDirection by remember { mutableStateOf(SpeedTestDirection.DOWNLOAD) }
 
@@ -153,7 +158,14 @@ fun SpeedTestDialog(
                         proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
                     )
                 } else {
-                    SpeedTestService(downloadTimeoutMs = downloadTimeoutMs)
+                    val directClient = NetworkClient.createUnderlyingNetworkClient(
+                        context,
+                        maxOf(downloadTimeoutMs, AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS)
+                    ) ?: throw IllegalStateException("当前没有可用的 Wi-Fi 或移动网络")
+                    SpeedTestService(
+                        downloadTimeoutMs = downloadTimeoutMs,
+                        baseClient = directClient
+                    )
                 }
                 service = createdService
                 withContext(Dispatchers.Main) {
@@ -318,7 +330,7 @@ fun SpeedTestDialog(
                 val totalBytes = selectedSize.bytes * (if (selectedDirection == SpeedTestDirection.BOTH) 2 else 1)
                 val totalMb = totalBytes / 1_000_000
                 val targetLabel = if (targetMode == SpeedTestTargetMode.NODE) "节点带宽" else "直连带宽"
-                Text("本次将测试$targetLabel，预计消耗约 ${totalMb}MB 流量。\n如果您正在使用流量数据，请确认剩余流量充足。")
+                Text("本次将测试$targetLabel，预计消耗约 ${totalMb}MB 流量，另有每个方向约 0.1MB 预热流量。\n高速网络建议选择 25MB 或 50MB，以减少短样本误差。")
             },
             confirmButton = {
                 TextButton(

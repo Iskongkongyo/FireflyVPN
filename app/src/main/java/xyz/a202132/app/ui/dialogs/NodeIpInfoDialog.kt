@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -36,6 +37,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.NodeIpInfo
+import xyz.a202132.app.ui.components.NodeIcon
 
 @Composable
 fun NodeIpInfoDialog(
@@ -82,11 +84,15 @@ fun NodeIpInfoDialog(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "${node.getFlagEmoji()} ${node.getDisplayName()}",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    NodeIcon(node = node, size = 20.dp, flagFontSize = 18.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = node.getDisplayName(),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "IP信息主要来源于 https://my.ippure.com/v1/info，数据仅供参考，本APP不对数据真实性提供保证！",

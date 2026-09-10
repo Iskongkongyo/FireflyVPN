@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
-import xyz.a202132.app.util.CryptoUtils
+import xyz.a202132.app.util.LegacyRawLinkMigrationCrypto
 
 /**
  * 代理节点数据模型
@@ -33,23 +33,24 @@ data class Node(
     val autoTestedAt: Long = 0,           // 自动化测试时间戳
     // Node source metadata.
     val source: NodeSource = NodeSource.SUBSCRIPTION,
+    val subscriptionGroupId: String? = null,
     val favoriteSourceNodeId: String? = null,
     val favoriteCreatedAt: Long = 0L
 ) {
     /**
      * 读取原始链接（自动兼容明文/密文存储）
      */
-    fun getRawLinkPlain(): String = CryptoUtils.decryptFromStorage(rawLink)
+    fun getRawLinkPlain(): String = LegacyRawLinkMigrationCrypto.decryptOrNull(rawLink) ?: rawLink
 
     /**
      * 是否为加密存储格式
      */
-    fun isRawLinkEncrypted(): Boolean = rawLink.startsWith("enc:gcm:")
+    fun isRawLinkEncrypted(): Boolean = LegacyRawLinkMigrationCrypto.isLegacyValue(rawLink)
 
     /**
      * 获取国旗emoji
      */
-    fun getFlagEmoji(): String {
+    fun getFlagEmojiOrNull(): String? {
         // 1. 尝试在名称中查找现有的旗帜表情符号
         var i = 0
         while (i < name.length) {
@@ -70,14 +71,14 @@ data class Node(
 
         // 2. 回退至根据国家代码生成
         if (country.isNullOrEmpty() || country.length != 2) {
-            return "🌐"
+            return null
         }
         return try {
             val firstChar = Character.codePointAt(country.uppercase(), 0) - 0x41 + 0x1F1E6
             val secondChar = Character.codePointAt(country.uppercase(), 1) - 0x41 + 0x1F1E6
             String(Character.toChars(firstChar)) + String(Character.toChars(secondChar))
         } catch (e: Exception) {
-            "🌐"
+            null
         }
     }
     
@@ -146,6 +147,7 @@ enum class NodeSource {
     FAVORITE
 }
 
+@Deprecated("Use subscription group ids and FAVORITES_NODE_GROUP_ID")
 enum class NodeListCategory {
     PRIMARY,
     FAVORITES

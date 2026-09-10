@@ -7,8 +7,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -30,7 +32,6 @@ import xyz.a202132.app.ui.dialogs.AutoTestDetailDialog
 import xyz.a202132.app.ui.dialogs.AutoTestResultDialog
 import xyz.a202132.app.ui.dialogs.SpeedTestDialog
 import xyz.a202132.app.ui.theme.*
-import xyz.a202132.app.viewmodel.AutoTestConfig
 import xyz.a202132.app.viewmodel.AutoTestStage
 import xyz.a202132.app.viewmodel.BestNodePriority
 import xyz.a202132.app.viewmodel.MainViewModel
@@ -44,6 +45,8 @@ fun MainScreen(
     viewModel: MainViewModel = viewModel(),
     onStartVpn: (action: () -> Unit) -> Unit,
     onOpenPerAppProxy: () -> Unit = {},
+    onOpenSubscriptionManagement: () -> Unit = {},
+    onOpenRuleManagement: () -> Unit = {},
     onOpenNodeList: () -> Unit = {},
     onOpenNetworkToolbox: () -> Unit = {},
     onOpenUnlockTest: () -> Unit = {},
@@ -56,19 +59,14 @@ fun MainScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     
     // Collect状态
-    val nodes by viewModel.nodes.collectAsState()
     val currentNode by viewModel.currentNode.collectAsState()
-    val selectedNodeId by viewModel.selectedNodeId.collectAsState()
     val proxyMode by viewModel.proxyMode.collectAsState()
     val vpnState by viewModel.vpnState.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val isTesting by viewModel.isTesting.collectAsState()
-    val testingLabel by viewModel.testingLabel.collectAsState()
-    val filterUnavailable by viewModel.filterUnavailable.collectAsState()
     val notice by viewModel.notice.collectAsState()
-    val noticeConfig by viewModel.noticeConfig.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
-    val error by viewModel.error.collectAsState()
+    val remoteAppSettings by viewModel.remoteAppSettings.collectAsState()
+    val updateCheckAvailable by viewModel.updateCheckAvailable.collectAsState()
     val infoDialogMessage by viewModel.infoDialogMessage.collectAsState()
     val isAutoSelecting by viewModel.isAutoSelecting.collectAsState()
     val isUserAgreementAccepted by viewModel.isUserAgreementAccepted.collectAsState()
@@ -83,6 +81,7 @@ fun MainScreen(
     var autoTestWasRunning by remember { mutableStateOf(false) }
     var showQuickModePicker by remember { mutableStateOf(false) }
     var showTestPreferPanelPage by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
     
     // 流量统计
     val uploadSpeed by viewModel.uploadSpeed.collectAsState()
@@ -90,9 +89,6 @@ fun MainScreen(
     val uploadTotal by viewModel.uploadTotal.collectAsState()
     val downloadTotal by viewModel.downloadTotal.collectAsState()
     
-    // 备用节点设置
-    val backupNodeEnabled by viewModel.backupNodeEnabled.collectAsState()
-
     // 自动化测试设置/状态
     val autoTestEnabled by viewModel.autoTestEnabled.collectAsState()
     val autoTestFilterUnavailable by viewModel.autoTestFilterUnavailable.collectAsState()
@@ -112,20 +108,15 @@ fun MainScreen(
     val autoTestNodeLimit by viewModel.autoTestNodeLimit.collectAsState()
     val autoTestProgress by viewModel.autoTestProgress.collectAsState()
     val autoTestResultSnapshot by viewModel.autoTestResultSnapshot.collectAsState()
+    val autoTestResultMode by viewModel.autoTestResultMode.collectAsState()
+    val autoTestResultPriority by viewModel.autoTestResultPriority.collectAsState()
     val preferTestModes by viewModel.preferTestModes.collectAsState()
     val preferTestSelectedModeId by viewModel.preferTestSelectedModeId.collectAsState()
+    val selectedNodeGroupId by viewModel.selectedNodeGroupId.collectAsState()
+    val nodeGroups by viewModel.nodeGroups.collectAsState()
     val nodeIpInfoTestOnVpnStart by viewModel.nodeIpInfoTestOnVpnStart.collectAsState()
     val speedTestDownloadTimeoutMs by viewModel.speedTestDownloadTimeoutMs.collectAsState()
-    // val showBackupFailedDialog by viewModel.showBackupFailedDialog.collectAsState() // Removed
-    
-    // 显示错误Toast
-    LaunchedEffect(error) {
-        error?.let { errorMessage ->
-            Toast.makeText(context, errorMessage, Toast.LENGTH_SHORT).show()
-            viewModel.clearError()
-        }
-    }
-    
+
     // 移动网络提醒
     val cellularWarning by xyz.a202132.app.service.ServiceManager.cellularWarning.collectAsState()
     LaunchedEffect(cellularWarning) {
@@ -158,6 +149,7 @@ fun MainScreen(
     }
 
     // Drawer
+    Box(modifier = Modifier.fillMaxSize()) {
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -166,15 +158,15 @@ fun MainScreen(
                 windowInsets = WindowInsets(0, 0, 0, 0)
             ) {
                 DrawerContent(
-                    onCheckUpdate = { viewModel.checkUpdate() },
+                    remoteAppSettings = remoteAppSettings,
+                    onOpenAbout = { showAboutDialog = true },
                     onOpenPerAppProxy = onOpenPerAppProxy,
+                    onOpenSubscriptionManagement = onOpenSubscriptionManagement,
+                    onOpenRuleManagement = onOpenRuleManagement,
                     onOpenOtherConfig = onOpenOtherConfig,
                     onOpenLanProxy = onOpenLanProxy,
                     onOpenRuntimeLog = onOpenRuntimeLog,
                     onOpenTestPreferPanel = { showTestPreferPanelPage = true },
-                    notice = noticeConfig, // Use noticeConfig for Drawer (Backup Node visibility)
-                    backupNodeEnabled = backupNodeEnabled,
-                    onToggleBackupNode = { viewModel.setBackupNodeEnabled(it) },
                     autoTestEnabled = autoTestEnabled,
                     autoTestFilterUnavailable = autoTestFilterUnavailable,
                     autoTestLatencyEnabled = autoTestLatencyEnabled,
@@ -238,6 +230,17 @@ fun MainScreen(
                             color = MaterialTheme.colorScheme.onBackground
                         )
                     },
+                    navigationIcon = {
+                        IconButton(
+                            onClick = { scope.launch { drawerState.open() } }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "菜单",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
                     actions = {
                         // 工具菜单按钮
                         var showToolsMenu by remember { mutableStateOf(false) }
@@ -256,13 +259,6 @@ fun MainScreen(
                                 onDismissRequest = { showToolsMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("⚡ 网速测试") },
-                                    onClick = {
-                                        showToolsMenu = false
-                                        showSpeedTestDialog = true
-                                    }
-                                )
-                                DropdownMenuItem(
                                     text = { Text("\uD83D\uDD0C TCPing") },
                                     onClick = {
                                         showToolsMenu = false
@@ -278,6 +274,13 @@ fun MainScreen(
                                         if (viewModel.showNodeListForTest("urltest")) {
                                             onOpenNodeList()
                                         }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("⚡ 网速测试") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        showSpeedTestDialog = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -317,17 +320,6 @@ fun MainScreen(
 
                             }
                         }
-                        
-                        // 设置按钮
-                        IconButton(
-                            onClick = { scope.launch { drawerState.open() } }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "设置",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
@@ -346,42 +338,49 @@ fun MainScreen(
             ) {
                 Spacer(modifier = Modifier.height(32.dp))
                 
-                // 当前节点信息
+                // 已选择节点信息
                 if (currentNode != null) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(
-                            text = "当前节点",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = currentNode!!.getFlagEmoji(),
-                                fontSize = 24.sp
+                            NodeIcon(
+                                node = currentNode,
+                                size = 28.dp,
+                                flagFontSize = 24.sp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = currentNode!!.getDisplayName(),
+                                modifier = Modifier.weight(1f, fill = false),
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onBackground
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        
-                        if (currentNode!!.latency > 0) {
-                            LatencyBadge(node = currentNode!!)
+                            if (currentNode!!.latency > 0) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                LatencyBadge(node = currentNode!!)
+                            }
                         }
 
-                        if (currentNode!!.downloadMbps > 0f) {
+                        val bandwidthSummary = buildList {
+                            if (currentNode!!.downloadMbps > 0f) {
+                                add("下行 %.1f Mbps".format(currentNode!!.downloadMbps))
+                            }
+                            if (currentNode!!.uploadMbps > 0f) {
+                                add("上行 %.1f Mbps".format(currentNode!!.uploadMbps))
+                            }
+                        }.joinToString(" · ")
+                        if (bandwidthSummary.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "带宽: %.1f Mbps".format(currentNode!!.downloadMbps),
+                                text = bandwidthSummary,
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -389,7 +388,7 @@ fun MainScreen(
                     }
                 } else if (isLoading) {
                     Text(
-                        text = "正在获取节点...",
+                        text = "节点正在后台更新...",
                         fontSize = 16.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -401,7 +400,9 @@ fun MainScreen(
                 ConnectButton(
                     vpnState = vpnState,
                     onClick = {
-                        if (currentNode == null) {
+                        if (vpnState == VpnState.CONNECTED) {
+                            viewModel.toggleVpn()
+                        } else if (currentNode == null) {
                             showQuickModePicker = true
                         } else {
                             // 手动连接 (需授权)
@@ -413,18 +414,18 @@ fun MainScreen(
                     customLabel = if (currentNode == null && vpnState == VpnState.DISCONNECTED) "点击中间按钮进行自动择优连接" else null
                 )
                 
-                // 流量统计 (仅在连接时显示)
+                Spacer(modifier = Modifier.weight(1f))
+
+                // 与节点选择器组成固定间距区域，避免流量卡片随可用空间上下漂移。
                 if (vpnState == VpnState.CONNECTED) {
-                    Spacer(modifier = Modifier.height(16.dp))
                     TrafficStatsRow(
                         uploadSpeed = uploadSpeed,
                         downloadSpeed = downloadSpeed,
                         uploadTotal = uploadTotal,
                         downloadTotal = downloadTotal
                     )
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
-                
-                Spacer(modifier = Modifier.weight(1f))
                 
                 // 节点选择器
                 NodeSelector(
@@ -446,21 +447,36 @@ fun MainScreen(
             }
         }
     }
+
+    if (showAboutDialog) {
+        AboutDialog(
+            githubUrl = remoteAppSettings.githubUrl.trim(),
+            updateCheckAvailable = updateCheckAvailable,
+            onCheckUpdate = {
+                showAboutDialog = false
+                viewModel.checkUpdate()
+                scope.launch { drawerState.close() }
+            },
+            onDismiss = { showAboutDialog = false }
+        )
+    }
+    }
     
     // 节点列表弹窗
     if (showAutoTestResultDialog) {
-        val currentPreferMode = preferTestModes.firstOrNull { it.id == preferTestSelectedModeId }
         val qualifiedNodes = autoTestResultSnapshot
-        val currentPriority = currentPreferMode?.defaultPriority ?: BestNodePriority.LATENCY
-        val autoConnectLabel = "自动连接最优（${priorityDisplayLabel(currentPriority, currentPreferMode)}）"
+        val resultMode = autoTestResultMode
+        val resultPriority = autoTestResultPriority
+        val autoConnectLabel = "连接推荐节点（${priorityDisplayLabel(resultPriority, resultMode)}）"
         AutoTestResultDialog(
             nodes = qualifiedNodes,
+            priority = resultPriority,
             onDismiss = { showAutoTestResultDialog = false },
             onNodeClick = { node -> nodeAutoTestDetail = node },
             autoConnectLabel = autoConnectLabel,
             onAutoConnectBest = {
                 onStartVpn {
-                    viewModel.selectBestNodeByPriorityFromSnapshot(currentPriority, true, currentPreferMode)
+                    viewModel.selectBestNodeByPriorityFromSnapshot(resultPriority, true, resultMode)
                 }
             }
         )
@@ -510,6 +526,11 @@ fun MainScreen(
             autoTestByRegion = autoTestByRegion,
             autoTestNodeLimit = autoTestNodeLimit,
             autoTestProgress = autoTestProgress,
+            hasRecentAutoTestResults = !autoTestProgress.running &&
+                autoTestProgress.stage == AutoTestStage.DONE &&
+                autoTestResultSnapshot.isNotEmpty(),
+            currentTestNodeGroupName = nodeGroups.firstOrNull { it.id == selectedNodeGroupId }?.name
+                ?: "加载中…",
             preferTestModes = preferTestModes,
             preferTestSelectedModeId = preferTestSelectedModeId,
             onSetAutoTestEnabled = { viewModel.setAutoTestEnabled(it) },
@@ -530,45 +551,40 @@ fun MainScreen(
             onSetAutoTestNodeLimit = { viewModel.setAutoTestNodeLimit(it) },
             onApplyPreferTestMode = { viewModel.applyPreferTestMode(it) },
             onCreatePreferTestMode = { viewModel.createPreferTestModeFromCurrent() },
-            onSaveCurrentPreferTestMode = { viewModel.saveCurrentPreferTestMode(it) },
-            onDeleteCurrentPreferTestMode = { viewModel.deleteCurrentPreferTestMode() },
-            onHideUnqualifiedAutoTestNodes = { viewModel.hideUnqualifiedAutoTestNodes() },
-            onSelectBestNodeByPriority = { priority, connect, modeOverride ->
-                if (connect) {
-                    onStartVpn { viewModel.selectBestNodeByPriorityFromSnapshot(priority, true, modeOverride) }
-                } else {
-                    viewModel.selectBestNodeByPriorityFromSnapshot(priority, false, modeOverride)
-                }
+            onSaveCurrentPreferTestMode = { name, config ->
+                viewModel.saveCurrentPreferTestMode(name, config)
             },
-            onUpdateCurrentPreferModePriority = { viewModel.updateCurrentPreferModePriority(it) },
+            onDeleteCurrentPreferTestMode = { viewModel.deleteCurrentPreferTestMode() },
+            onUpdateCurrentPreferModePriorityOrder = { viewModel.updateCurrentPreferModePriorityOrder(it) },
             onUpdateCurrentPreferModeUnlockPriority = { mode, siteIds ->
                 viewModel.updateCurrentPreferModeUnlockPriority(mode, siteIds)
             },
-            onStartAutomatedTest = {
-                val currentMode = preferTestModes.firstOrNull { it.id == preferTestSelectedModeId }
-                val panelConfig = AutoTestConfig(
-                    enabled = autoTestEnabled,
-                    filterUnavailable = autoTestFilterUnavailable,
-                    latencyEnabled = autoTestLatencyEnabled,
-                    latencyMode = autoTestLatencyMode,
-                    latencyThresholdMs = autoTestLatencyThresholdMs,
-                    bandwidthEnabled = autoTestBandwidthEnabled,
-                    bandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled,
-                    bandwidthUploadEnabled = autoTestBandwidthUploadEnabled,
-                    bandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps,
-                    bandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps,
-                    bandwidthWifiOnly = autoTestBandwidthWifiOnly,
-                    bandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb,
-                    bandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb,
-                    unlockEnabled = autoTestUnlockEnabled,
-                    byRegion = autoTestByRegion,
-                    nodeLimit = autoTestNodeLimit
-                )
-                onStartVpn {
+            onUpdateCurrentPreferModeAutoConnect = { viewModel.updateCurrentPreferModeAutoConnect(it) },
+            onShowRecentAutoTestResults = { showAutoTestResultDialog = true },
+            onStartAutomatedTest = { panelConfig, autoConnectBest, modeOverride ->
+                val startTest = {
                     viewModel.startAutomatedTest(
+                        preferPriority = if (autoConnectBest) {
+                            modeOverride?.priorityOrder?.firstOrNull { priority ->
+                                when (priority) {
+                                    BestNodePriority.LATENCY -> modeOverride.latencyEnabled
+                                    BestNodePriority.UPLOAD -> modeOverride.bandwidthEnabled && modeOverride.bandwidthUploadEnabled
+                                    BestNodePriority.DOWNLOAD -> modeOverride.bandwidthEnabled && modeOverride.bandwidthDownloadEnabled
+                                    BestNodePriority.UNLOCK_COUNT -> modeOverride.unlockEnabled
+                                }
+                            } ?: BestNodePriority.LATENCY
+                        } else {
+                            null
+                        },
+                        connectBestAfterDone = autoConnectBest,
                         configOverride = panelConfig,
-                        modeOverride = currentMode
+                        modeOverride = modeOverride
                     )
+                }
+                if (autoConnectBest) {
+                    onStartVpn(startTest)
+                } else {
+                    startTest()
                 }
             },
             onCancelAutomatedTest = { viewModel.cancelAutomatedTest() },
@@ -594,8 +610,6 @@ fun MainScreen(
             onDismiss = { viewModel.dismissNotice() }
         )
     }
-    
-    // 备用节点请求失败弹窗 (已移除，改为 Toast)
     
     // 更新弹窗
     if (updateInfo != null) {
@@ -632,11 +646,6 @@ fun MainScreen(
         }
     }
     
-    // 加载弹窗
-    if (isLoading && nodes.isEmpty()) {
-        LoadingDialog(message = "获取节点中...")
-    }
-    
     // 自动选择弹窗 (Blocking)
     if (isAutoSelecting) {
         LoadingDialog(
@@ -661,7 +670,10 @@ fun MainScreen(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) {
         // 从设置页返回后再次尝试安装
-        if (context.packageManager.canRequestPackageInstalls()) {
+        if (
+            android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
+            context.packageManager.canRequestPackageInstalls()
+        ) {
             viewModel.installApk()
         }
     }
@@ -713,7 +725,7 @@ fun MainScreen(
     
     // 连续下载失败后提示从官网下载
     var showWebsiteFallback by remember { mutableStateOf(false) }
-    val websiteUrl = xyz.a202132.app.AppConfig.WEBSITE_URL
+    val websiteUrl = remoteAppSettings.websiteUrl.trim()
     
     LaunchedEffect(downloadState.consecutiveFailures) {
         if (downloadState.consecutiveFailures >= 3 && websiteUrl.isNotBlank()) {

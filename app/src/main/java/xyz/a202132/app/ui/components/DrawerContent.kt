@@ -1,6 +1,7 @@
 package xyz.a202132.app.ui.components
 
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -9,7 +10,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
-import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -22,10 +22,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import xyz.a202132.app.AppConfig
 import xyz.a202132.app.BuildConfig
 import xyz.a202132.app.R
 import android.content.ClipData
@@ -34,22 +34,22 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import xyz.a202132.app.data.model.IPv6RoutingMode
-import xyz.a202132.app.ui.dialogs.AboutDialog
+import xyz.a202132.app.data.model.RemoteAppSettings
 import xyz.a202132.app.viewmodel.AutoTestLatencyMode
 import xyz.a202132.app.viewmodel.BestNodePriority
 import xyz.a202132.app.viewmodel.TestPreferMode
 
 @Composable
 fun DrawerContent(
-    onCheckUpdate: () -> Unit,
+    remoteAppSettings: RemoteAppSettings,
+    onOpenAbout: () -> Unit,
     onOpenPerAppProxy: () -> Unit,
+    onOpenSubscriptionManagement: () -> Unit,
+    onOpenRuleManagement: () -> Unit,
     onOpenOtherConfig: () -> Unit,
     onOpenLanProxy: () -> Unit,
     onOpenRuntimeLog: () -> Unit,
     onOpenTestPreferPanel: () -> Unit,
-    notice: xyz.a202132.app.data.model.NoticeInfo?,
-    backupNodeEnabled: Boolean,
-    onToggleBackupNode: (Boolean) -> Unit,
     autoTestEnabled: Boolean,
     autoTestFilterUnavailable: Boolean,
     autoTestLatencyEnabled: Boolean,
@@ -96,14 +96,6 @@ fun DrawerContent(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    var showBackupNodeConfirmDialog by remember { mutableStateOf(false) }
-    var showAboutDialog by remember { mutableStateOf(false) }
-    
-    // 检查备用节点是否可用
-    val backupNodeInfo = notice?.backupNodes
-    val isBackupNodeVisible = backupNodeInfo?.url?.let { 
-        it.startsWith("http://") || it.startsWith("https://") 
-    } == true
     
     Column(
         modifier = Modifier
@@ -130,38 +122,27 @@ fun DrawerContent(
         ) {
             // 菜单项
 
-            if (AppConfig.UPDATE_URL.isNotBlank()) {
-                DrawerMenuItem(
-                    icon = Icons.Outlined.SystemUpdate,
-                    title = "检查更新",
-                    onClick = {
-                        onCheckUpdate()
-                        onClose()
-                    }
-                )
-            }
-
-            // 备用节点 (仅在有效时显示)
-            if (isBackupNodeVisible) {
-                DrawerMenuToggle(
-                    icon = Icons.Outlined.Backup,
-                    title = "备用节点",
-                    subtitle = if (backupNodeEnabled) "已开启" else "已关闭",
-                    checked = backupNodeEnabled,
-                    onCheckedChange = { isChecked ->
-                        if (isChecked) {
-                            // 开启时显示确认对话框
-                            showBackupNodeConfirmDialog = true
-                        } else {
-                            // 关闭直接执行
-                            onToggleBackupNode(false)
-                        }
-                    }
-                )
-            }
+            DrawerMenuItem(
+                iconRes = R.drawable.ic_group_management,
+                title = "分组管理",
+                subtitle = "管理节点分组",
+                onClick = {
+                    onOpenSubscriptionManagement()
+                    onClose()
+                }
+            )
 
             DrawerMenuItem(
-                icon = Icons.Outlined.Settings,
+                icon = Icons.Outlined.Rule,
+                title = stringResource(R.string.rule_management_title),
+                onClick = {
+                    onOpenRuleManagement()
+                    onClose()
+                }
+            )
+
+            DrawerMenuItem(
+                iconRes = R.drawable.ic_test_prefer,
                 title = "择优面板",
                 subtitle = autoTestProgress.message.ifBlank {
                     if (autoTestProgress.running) "运行中..." else "未运行"
@@ -210,12 +191,13 @@ fun DrawerContent(
                 }
             )
             
-            if (AppConfig.WEBSITE_URL.isNotBlank()) {
+            val websiteUrl = remoteAppSettings.websiteUrl.trim()
+            if (websiteUrl.isNotBlank()) {
                 DrawerMenuItem(
                     icon = Icons.Outlined.Language,
                     title = "官方网站",
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppConfig.WEBSITE_URL))
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(websiteUrl))
                         context.startActivity(intent)
                         onClose()
                     }
@@ -223,23 +205,25 @@ fun DrawerContent(
             }
             
             // 问题反馈 - 支持邮箱复制 + 链接跳转
-            val hasEmail = AppConfig.FEEDBACK_EMAIL.isNotBlank()
-            val hasFeedbackUrl = AppConfig.FEEDBACK_URL.isNotBlank()
+            val feedbackEmail = remoteAppSettings.feedbackEmail.trim()
+            val feedbackUrl = remoteAppSettings.feedbackUrl.trim()
+            val hasEmail = feedbackEmail.isNotBlank()
+            val hasFeedbackUrl = feedbackUrl.isNotBlank()
             
             if (hasEmail || hasFeedbackUrl) {
                 DrawerMenuItem(
                     icon = Icons.Outlined.Email,
                     title = "问题反馈",
-                    subtitle = if (hasEmail) AppConfig.FEEDBACK_EMAIL else null,
+                    subtitle = feedbackEmail.takeIf { hasEmail },
                     onClick = {
                         if (hasEmail) {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = ClipData.newPlainText("email", AppConfig.FEEDBACK_EMAIL)
+                            val clip = ClipData.newPlainText("email", feedbackEmail)
                             clipboard.setPrimaryClip(clip)
                             Toast.makeText(context, "邮箱已复制", Toast.LENGTH_SHORT).show()
                         }
                         if (hasFeedbackUrl) {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppConfig.FEEDBACK_URL))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(feedbackUrl))
                             context.startActivity(intent)
                             onClose()
                         }
@@ -250,7 +234,7 @@ fun DrawerContent(
             DrawerMenuItem(
                 icon = Icons.Outlined.Info,
                 title = "关于应用",
-                onClick = { showAboutDialog = true }
+                onClick = onOpenAbout
             )
             
             Spacer(modifier = Modifier.height(12.dp))
@@ -267,48 +251,12 @@ fun DrawerContent(
         )
     }
     
-    // 备用节点开启确认弹窗
-    if (showBackupNodeConfirmDialog && backupNodeInfo != null) {
-        AlertDialog(
-            onDismissRequest = { showBackupNodeConfirmDialog = false },
-            title = { Text("开启备用节点") },
-            text = { 
-                Text(
-                    text = if (!backupNodeInfo.msg.isNullOrBlank()) {
-                        backupNodeInfo.msg
-                    } else {
-                        "开启后，节点列表只会显示备用节点信息！"
-                    }
-                ) 
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onToggleBackupNode(true)
-                        showBackupNodeConfirmDialog = false
-                    }
-                ) {
-                    Text("是")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBackupNodeConfirmDialog = false }) {
-                    Text("否")
-                }
-            }
-        )
-    }
-    
-    // 关于弹窗
-    if (showAboutDialog) {
-        AboutDialog(onDismiss = { showAboutDialog = false })
-    }
-
 }
 
 @Composable
 private fun DrawerMenuItem(
-    icon: ImageVector,
+    icon: ImageVector? = null,
+    @DrawableRes iconRes: Int? = null,
     title: String,
     subtitle: String? = null,
     onClick: () -> Unit
@@ -325,12 +273,20 @@ private fun DrawerMenuItem(
                 .padding(horizontal = 24.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
+            when {
+                iconRes != null -> Icon(
+                    painter = painterResource(id = iconRes),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                icon != null -> Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
             
             Spacer(modifier = Modifier.width(16.dp))
             
@@ -350,57 +306,6 @@ private fun DrawerMenuItem(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun DrawerMenuToggle(
-    icon: ImageVector,
-    title: String,
-    subtitle: String? = null,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) },
-        color = androidx.compose.ui.graphics.Color.Transparent
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-            
-            Spacer(modifier = Modifier.width(16.dp))
-            
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                
-                if (subtitle != null) {
-                    Text(
-                        text = subtitle,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            
-            // Switch 移除，点击整行即可切换，更美观
         }
     }
 }

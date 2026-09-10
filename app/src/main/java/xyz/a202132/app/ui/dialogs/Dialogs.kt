@@ -3,12 +3,16 @@ package xyz.a202132.app.ui.dialogs
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.ColorFilter
+import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.os.SystemClock
 import android.text.Html
 import android.text.method.LinkMovementMethod
 import android.util.Base64
+import android.util.TypedValue
 import android.widget.TextView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -38,6 +42,7 @@ import xyz.a202132.app.network.NetworkClient
 import xyz.a202132.app.ui.theme.*
 import xyz.a202132.app.R
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 private val htmlImageExecutor = Executors.newCachedThreadPool()
 private val htmlImageClient: OkHttpClient by lazy {
@@ -269,25 +274,33 @@ private class HtmlImageGetter(
 ) : Html.ImageGetter {
 
     override fun getDrawable(source: String?): Drawable {
-        val drawable = UrlDrawable()
-        drawable.setBounds(0, 0, 1, 1)
+        val drawable = UrlDrawable(textView)
+        val availableWidth = (textView.width - textView.paddingLeft - textView.paddingRight)
+            .takeIf { it > 0 }
+            ?: (textView.resources.displayMetrics.widthPixels * 0.72f).roundToInt()
+        val placeholderHeight = (64f * textView.resources.displayMetrics.density).roundToInt()
+        drawable.setBounds(0, 0, availableWidth.coerceAtLeast(1), placeholderHeight.coerceAtLeast(1))
 
         if (source.isNullOrBlank()) {
+            drawable.markFailed()
             return drawable
         }
 
         htmlImageExecutor.execute {
-            val loaded = runCatching { loadDrawable(source) }.getOrNull() ?: return@execute
+            val loaded = runCatching { loadDrawable(source) }.getOrNull()
             textView.post {
-                val maxWidth = (textView.width - textView.paddingLeft - textView.paddingRight)
-                    .takeIf { it > 0 }
-                    ?: (textView.resources.displayMetrics.widthPixels * 0.8f).toInt()
-                val targetWidth = loaded.intrinsicWidth.coerceAtLeast(1).coerceAtMost(maxWidth)
-                val aspectRatio = loaded.intrinsicHeight.toFloat() / loaded.intrinsicWidth.coerceAtLeast(1)
-                val targetHeight = (targetWidth * aspectRatio).toInt().coerceAtLeast(1)
-                loaded.setBounds(0, 0, targetWidth, targetHeight)
-                drawable.wrapped = loaded
-                drawable.setBounds(0, 0, targetWidth, targetHeight)
+                if (loaded == null) {
+                    drawable.markFailed()
+                } else {
+                    val maxWidth = (textView.width - textView.paddingLeft - textView.paddingRight)
+                        .takeIf { it > 0 }
+                        ?: (textView.resources.displayMetrics.widthPixels * 0.8f).toInt()
+                    val targetWidth = loaded.intrinsicWidth.coerceAtLeast(1).coerceAtMost(maxWidth)
+                    val aspectRatio = loaded.intrinsicHeight.toFloat() / loaded.intrinsicWidth.coerceAtLeast(1)
+                    val targetHeight = (targetWidth * aspectRatio).toInt().coerceAtLeast(1)
+                    loaded.setBounds(0, 0, targetWidth, targetHeight)
+                    drawable.show(loaded, targetWidth, targetHeight)
+                }
                 textView.text = textView.text
                 textView.invalidate()
             }
@@ -299,7 +312,7 @@ private class HtmlImageGetter(
     private fun loadDrawable(source: String): Drawable? {
         val resolvedSource = when {
             source.startsWith("//") -> "https:$source"
-            source.startsWith("/") -> AppConfig.NOTICE_URL.substringBefore("/apis/") + source
+            source.startsWith("/") -> AppConfig.API_BASE_URL + source
             else -> source
         }
         return if (source.startsWith("data:image", ignoreCase = true)) {
@@ -324,11 +337,77 @@ private class HtmlImageGetter(
     }
 }
 
-private class UrlDrawable : Drawable() {
-    var wrapped: Drawable? = null
+private class UrlDrawable(
+    private val textView: TextView
+) : Drawable() {
+    private var wrapped: Drawable? = null
+    private var failed = false
+    private var animationScheduled = false
+    private val density = textView.resources.displayMetrics.density
+    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            14f,
+            textView.resources.displayMetrics
+        )
+    }
+
+    fun show(drawable: Drawable, width: Int, height: Int) {
+        wrapped = drawable
+        failed = false
+        setBounds(0, 0, width, height)
+        invalidateSelf()
+    }
+
+    fun markFailed() {
+        wrapped = null
+        failed = true
+        invalidateSelf()
+    }
 
     override fun draw(canvas: Canvas) {
-        wrapped?.draw(canvas)
+        wrapped?.let {
+            it.draw(canvas)
+            return
+        }
+
+        backgroundPaint.color = textView.currentTextColor
+        backgroundPaint.alpha = 14
+        canvas.drawRoundRect(RectF(bounds), 10f * density, 10f * density, backgroundPaint)
+
+        val label = if (failed) "图片加载失败" else "图片加载中……"
+        textPaint.color = textView.currentTextColor
+        textPaint.alpha = if (failed) 180 else 210
+        val baseline = bounds.exactCenterY() - (textPaint.ascent() + textPaint.descent()) / 2f
+        val textWidth = textPaint.measureText(label)
+
+        if (failed) {
+            canvas.drawText(label, bounds.exactCenterX() - textWidth / 2f, baseline, textPaint)
+            return
+        }
+
+        val progressSize = 18f * density
+        val gap = 9f * density
+        val contentWidth = progressSize + gap + textWidth
+        val startX = bounds.exactCenterX() - contentWidth / 2f
+        val progressBounds = RectF(
+            startX,
+            bounds.exactCenterY() - progressSize / 2f,
+            startX + progressSize,
+            bounds.exactCenterY() + progressSize / 2f
+        )
+        progressPaint.color = textView.linkTextColors.defaultColor
+        progressPaint.alpha = 255
+        val rotation = (SystemClock.uptimeMillis() % PROGRESS_PERIOD_MS) * 360f / PROGRESS_PERIOD_MS
+        canvas.drawArc(progressBounds, rotation, 270f, false, progressPaint)
+        canvas.drawText(label, startX + progressSize + gap, baseline, textPaint)
+        scheduleNextFrame()
     }
 
     override fun setAlpha(alpha: Int) {
@@ -339,11 +418,25 @@ private class UrlDrawable : Drawable() {
         wrapped?.colorFilter = colorFilter
     }
 
-    override fun getOpacity(): Int = wrapped?.opacity ?: PixelFormat.TRANSLUCENT
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 
     override fun getIntrinsicWidth(): Int = wrapped?.intrinsicWidth ?: 1
 
     override fun getIntrinsicHeight(): Int = wrapped?.intrinsicHeight ?: 1
+
+    private fun scheduleNextFrame() {
+        if (animationScheduled) return
+        animationScheduled = true
+        textView.postDelayed({
+            animationScheduled = false
+            if (wrapped == null && !failed) textView.invalidate()
+        }, PROGRESS_FRAME_DELAY_MS)
+    }
+
+    private companion object {
+        const val PROGRESS_PERIOD_MS = 900L
+        const val PROGRESS_FRAME_DELAY_MS = 40L
+    }
 }
 
 @Composable

@@ -156,6 +156,11 @@ fun LanProxyScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
+            LanProxySection(
+                title = "使用建议",
+                description = "Windows 系统代理优先使用 HTTP；Firefox、curl 等工具可使用 SOCKS5。建议使用 socks5h://，由手机端解析域名。"
+            ) {}
+
             LanProxySection {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -164,13 +169,13 @@ fun LanProxyScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "允许局域网连接",
+                            text = "允许局域网设备连接",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (enabledDraft) "在同一局域网的其他设备可通过本机代理（需选择节点并开启VPN）访问当前节点" else "开启后在手机端启动 HTTP 与 SOCKS5 代理端口，局域网内的设备可连接使用",
+                            text = if (enabledDraft) "需选择节点并连接 VPN 后使用。" else "开启后提供 HTTP 与 SOCKS5 代理。",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -185,11 +190,11 @@ fun LanProxyScreen(
 
             LanProxySection(
                 title = "连接地址",
-                description = "优先使用 HTTP；不支持 HTTP 的应用可选 SOCKS5。"
+                description = "复制地址并填入其他设备的代理设置。"
             ) {
                 if (lanEndpoints.isEmpty()) {
                     Text(
-                        text = "未发现可用局域网 IPv4 地址，请确认手机已连接 Wi-Fi 或热点已开启。",
+                        text = "未检测到局域网 IPv4，请连接 Wi-Fi 或开启热点。",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -224,18 +229,11 @@ fun LanProxyScreen(
             }
 
             LanProxySection(
-                title = "使用建议",
-                description = "Windows 设置里的代理服务器通常按 HTTP 代理使用；SOCKS5 更适合 Firefox 手动代理、curl 或专业代理工具。curl 测试 SOCKS5 建议使用 socks5h://，让 APP 侧解析域名。"
-            ) {
-                
-            }
-
-            LanProxySection(
                 title = "后台稳定性",
                 description = if (ignoringBatteryOptimizations) {
-                    "已允许忽略电池优化。长时间开启局域网代理时，系统更不容易在息屏或待机后限制 VPN 服务。"
+                    "已忽略电池优化，有助于保持代理后台运行。"
                 } else {
-                    "建议允许忽略电池优化，以提升局域网代理长时间运行稳定性。部分系统仍可能需要在系统管家里额外允许自启动/后台运行。"
+                    "建议忽略电池优化；部分系统还需允许自启动和后台运行。"
                 }
             ) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -252,7 +250,7 @@ fun LanProxyScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (enabledDraft) "当前已开启局域网代理，建议保持允许。" else "开启局域网代理后建议允许此项。",
+                                text = if (ignoringBatteryOptimizations) "建议保持此权限。" else "可减少息屏后的服务中断。",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -279,7 +277,7 @@ fun LanProxyScreen(
 
             LanProxySection(
                 title = "端口",
-                description = "HTTP 使用当前端口，SOCKS5 使用下一端口；自动选择会寻找一组可用端口。"
+                description = "SOCKS5 使用 HTTP 的下一端口；自动模式会避开占用端口。"
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -307,13 +305,13 @@ fun LanProxyScreen(
                         refreshTick++
                     }
                 ) {
-                    Text("查找当前空闲端口")
+                    Text("查找空闲端口")
                 }
             }
 
             LanProxySection(
                 title = "认证",
-                description = "⚠️ 开启认证后，浏览器（Firefox/Edge/Chrome）不会弹出认证框，将直接无法使用代理。这是代理内核的限制（未认证连接会被直接关闭而不是返回认证提示）。\n\n如需认证，请使用 curl 命令行（在代理地址前加 user:pass@）验证或使用支持预设凭证的代理工具（如 SwitchyOmega 扩展）。一般场景建议关闭认证。"
+                description = "部分浏览器不支持代理认证弹窗。开启后请使用可预设凭据的客户端；一般建议关闭。"
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -370,7 +368,7 @@ fun LanProxyScreen(
 
             if (vpnState == VpnState.CONNECTED) {
                 Text(
-                    text = "保存后会自动重载当前 VPN 连接。",
+                    text = "保存后将自动重载 VPN。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.primary
                 )

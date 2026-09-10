@@ -15,6 +15,9 @@ interface NodeDao {
     @Query("SELECT * FROM nodes WHERE source = 'SUBSCRIPTION' ORDER BY sortOrder ASC, latency ASC")
     fun getSubscriptionNodes(): Flow<List<Node>>
 
+    @Query("SELECT * FROM nodes WHERE source = 'SUBSCRIPTION' AND subscriptionGroupId = :groupId ORDER BY sortOrder ASC, latency ASC")
+    fun getSubscriptionNodes(groupId: String): Flow<List<Node>>
+
     @Query("SELECT * FROM nodes WHERE source = 'FAVORITE' ORDER BY favoriteCreatedAt ASC, sortOrder ASC, latency ASC")
     fun getFavoriteNodes(): Flow<List<Node>>
 
@@ -48,6 +51,9 @@ interface NodeDao {
     @Query("DELETE FROM nodes WHERE source = 'SUBSCRIPTION'")
     suspend fun deleteSubscriptionNodes()
 
+    @Query("DELETE FROM nodes WHERE source = 'SUBSCRIPTION' AND subscriptionGroupId = :groupId")
+    suspend fun deleteSubscriptionNodes(groupId: String)
+
     @Query("DELETE FROM nodes WHERE id = :nodeId")
     suspend fun deleteNodeById(nodeId: String)
 
@@ -60,6 +66,12 @@ interface NodeDao {
     @Transaction
     suspend fun replaceSubscriptionNodes(nodes: List<Node>) {
         deleteSubscriptionNodes()
+        insertNodes(nodes)
+    }
+
+    @Transaction
+    suspend fun replaceSubscriptionNodes(groupId: String, nodes: List<Node>) {
+        deleteSubscriptionNodes(groupId)
         insertNodes(nodes)
     }
     

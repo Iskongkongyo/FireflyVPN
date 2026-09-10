@@ -80,19 +80,25 @@ fun ConnectButton(
             )
         }
 
+        val statusLabel = customLabel ?: when (vpnState) {
+            VpnState.CONNECTED -> null
+            VpnState.CONNECTING -> "连接中..."
+            VpnState.DISCONNECTING -> "断开中..."
+            VpnState.DISCONNECTED -> "点击连接"
+        }
         Spacer(modifier = Modifier.height(16.dp))
-
-        // 状态文本
-        Text(
-            text = customLabel ?: when (vpnState) {
-                VpnState.CONNECTED -> "已连接"
-                VpnState.CONNECTING -> "连接中..."
-                VpnState.DISCONNECTING -> "断开中..."
-                VpnState.DISCONNECTED -> "点击连接"
-            },
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium
-        )
+        Box(
+            modifier = Modifier.height(20.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (statusLabel != null) {
+                Text(
+                    text = statusLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 }

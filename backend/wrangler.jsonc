@@ -1,0 +1,35 @@
+{
+    "$schema": "./node_modules/wrangler/config-schema.json",
+    "name": "firefly-vpn-edge",
+    "main": "src/index.ts",
+    "compatibility_date": "2026-09-06",
+    "workers_dev": true,
+    "triggers": {
+        "crons": [
+            "17 * * * *"
+        ]
+    },
+    "assets": {
+        "directory": "./public",
+        "binding": "ASSETS",
+        "run_worker_first": true
+    },
+    "vars": {
+        "APP_ENV": "development",
+        "ADMIN_ROUTE": ""
+    },
+    "kv_namespaces": [
+        {
+            "binding": "CONFIG",
+            "id": "这里填写CONFIG对应的ID"
+        }
+    ],
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "firefly-vpn-edge",
+            "database_id": "这里填写DB对应的ID",
+            "migrations_dir": "database/migrations"
+        }
+    ]
+}

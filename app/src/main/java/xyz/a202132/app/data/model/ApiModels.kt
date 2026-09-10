@@ -3,10 +3,60 @@ package xyz.a202132.app.data.model
 import com.google.gson.annotations.SerializedName
 
 /**
+ * Firefly Edge API 的统一 JSON 响应。
+ */
+data class ApiEnvelope<T>(
+    @SerializedName("ok")
+    val ok: Boolean = false,
+    @SerializedName("data")
+    val data: T? = null,
+    @SerializedName("error")
+    val error: String? = null,
+    @SerializedName("requestId")
+    val requestId: String? = null
+)
+
+/** `/api/v2/bootstrap` 下发的客户端公开配置。 */
+data class ClientCatalogInfo(
+    @SerializedName("crypto")
+    val crypto: ClientCryptoInfo? = null,
+
+    @SerializedName("notice")
+    val notice: NoticeInfo? = null,
+
+    @SerializedName("appUpdate")
+    val appUpdate: UpdateInfo? = null,
+
+    @SerializedName("settings")
+    val settings: RemoteAppSettings? = null
+)
+
+data class ClientCryptoInfo(
+    @SerializedName("version")
+    val version: Int = 0,
+    @SerializedName("algorithm")
+    val algorithm: String = ""
+)
+
+data class RemoteAppSettings(
+    @SerializedName("websiteUrl")
+    val websiteUrl: String = "",
+
+    @SerializedName("feedbackEmail")
+    val feedbackEmail: String = "",
+
+    @SerializedName("feedbackUrl")
+    val feedbackUrl: String = "",
+
+    @SerializedName("githubUrl")
+    val githubUrl: String = ""
+)
+
+/**
  * 版本更新响应
  */
 data class UpdateInfo(
-    @SerializedName("version")
+    @SerializedName(value = "versionName", alternate = ["version"])
     val version: String,
     
     @SerializedName("versionCode")
@@ -16,15 +66,17 @@ data class UpdateInfo(
     val downloadUrl: String,
     
     @SerializedName("changelog") val changelog: String,
-    @SerializedName("is_force") val isForce: Int = 0
-)
+    @SerializedName("force") val force: Boolean = false
+){
+    val isForce: Int get() = if (force) 1 else 0
+}
 
 /**
  * 通知公告响应
  */
 data class NoticeInfo(
-    @SerializedName("hasNotice")
-    val hasNotice: Boolean,
+    @SerializedName(value = "enabled", alternate = ["hasNotice"])
+    val hasNotice: Boolean = true,
     
     @SerializedName("title")
     val title: String = "",
@@ -32,53 +84,11 @@ data class NoticeInfo(
     @SerializedName("content")
     val content: String = "",
     
-    @SerializedName("noticeId")
+    @SerializedName(value = "id", alternate = ["noticeId"])
     val noticeId: String = "",
     
     @SerializedName("showOnce")
-    val showOnce: Boolean = true,
-    
-    @SerializedName("backupNodes")
-    val backupNodes: BackupNodeInfo? = null,
-
-    @SerializedName("scheduledNodeUpdate")
-    val scheduledNodeUpdate: ScheduledNodeUpdateInfo? = null,
-
-    // 兼容旧 notice 配置；新配置推荐放到 scheduledNodeUpdate.nodeAutoReconnect。
-    @SerializedName("nodeAutoReconnect")
-    val nodeAutoReconnect: Boolean? = null
-)
-
-/**
- * 服务端下发的定时节点更新配置。
- * 字段为空时不覆盖本地设置，整个对象存在时优先级高于本地定时更新配置。
- */
-data class ScheduledNodeUpdateInfo(
-    @SerializedName("enabled")
-    val enabled: Boolean? = null,
-
-    @SerializedName("hours")
-    val hours: Int? = null,
-
-    @SerializedName("minutes")
-    val minutes: Int? = null,
-
-    @SerializedName("nodeAutoReconnect")
-    val nodeAutoReconnect: Boolean? = null,
-
-    @SerializedName("toastEnabled")
-    val toastEnabled: Boolean? = null
-)
-
-/**
- * 备用节点信息
- */
-data class BackupNodeInfo(
-    @SerializedName("msg")
-    val msg: String? = null,
-    
-    @SerializedName("url")
-    val url: String? = null
+    val showOnce: Boolean = true
 )
 
 /**

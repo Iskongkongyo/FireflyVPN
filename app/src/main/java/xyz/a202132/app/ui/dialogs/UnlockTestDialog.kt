@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import xyz.a202132.app.data.model.Node
+import xyz.a202132.app.ui.components.NodeIcon
 import xyz.a202132.app.viewmodel.UnlockNodeResult
 import xyz.a202132.app.viewmodel.UnlockResultStatus
 import java.text.SimpleDateFormat
@@ -80,8 +81,14 @@ internal fun UnlockNodeSelectionPane(
                             onCheckedChange = { onToggleNode(node.id) },
                             enabled = !isRunning
                         )
+                        NodeIcon(
+                            node = node,
+                            size = 22.dp,
+                            flagFontSize = 18.sp,
+                            modifier = Modifier.padding(end = 6.dp)
+                        )
                         Text(
-                            text = "${node.getFlagEmoji()} ${node.getDisplayName()}",
+                            text = node.getDisplayName(),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

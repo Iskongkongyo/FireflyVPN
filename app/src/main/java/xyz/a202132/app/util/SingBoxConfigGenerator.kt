@@ -10,6 +10,9 @@ import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.NodeType
 import xyz.a202132.app.data.model.ProxyMode
 import xyz.a202132.app.data.model.IPv6RoutingMode
+import xyz.a202132.app.data.model.TunStackMode
+import xyz.a202132.app.rules.config.RuleConfigBuilder
+import xyz.a202132.app.rules.model.RuleRoutingOptions
 import android.net.Uri
 import android.util.Base64
 
@@ -44,11 +47,15 @@ class SingBoxConfigGenerator {
         ipv6Mode: IPv6RoutingMode = IPv6RoutingMode.DISABLED,
         mtu: Int = AppConfig.VPN_MTU,
         lanProxy: LanProxyConfig = LanProxyConfig(),
-        internalSocksPort: Int? = null
+        internalSocksPort: Int? = null,
+        hysteria2UploadMbps: Int = AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS,
+        hysteria2DownloadMbps: Int = AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS,
+        tunStackMode: TunStackMode = TunStackMode.GVISOR,
+        ruleOptions: RuleRoutingOptions = RuleRoutingOptions()
     ): String {
         // 如果没有节点，生成一个空配置防止崩溃
         if (nodes.isEmpty()) {
-            return generateEmptyConfig()
+            return generateEmptyConfig(tunStackMode)
         }
 
         val config = JsonObject().apply {
@@ -63,15 +70,18 @@ class SingBoxConfigGenerator {
                 
             add("log", createLogConfig())
             add("dns", createDnsConfig(proxyMode, nodeDomains, ipv6Mode))
-            add("inbounds", createInbounds(ipv6Mode, mtu, lanProxy, internalSocksPort))
-            add("outbounds", createOutbounds(nodes, selectedNodeId))
-            add("route", createRoute(proxyMode, nodeDomains, nodeIPs, bypassLan))
+            add("inbounds", createInbounds(ipv6Mode, mtu, lanProxy, internalSocksPort, tunStackMode))
+            add(
+                "outbounds",
+                createOutbounds(nodes, selectedNodeId, hysteria2UploadMbps, hysteria2DownloadMbps)
+            )
+            add("route", createRoute(proxyMode, nodeDomains, nodeIPs, bypassLan, ruleOptions))
             add("experimental", createExperimental())
         }
         return gson.toJson(config)
     }
     
-    private fun generateEmptyConfig(): String {
+    private fun generateEmptyConfig(tunStackMode: TunStackMode = TunStackMode.GVISOR): String {
         val config = JsonObject().apply {
             add("log", createLogConfig())
             add(
@@ -80,7 +90,8 @@ class SingBoxConfigGenerator {
                     IPv6RoutingMode.DISABLED,
                     AppConfig.VPN_MTU,
                     LanProxyConfig(),
-                    null
+                    null,
+                    tunStackMode
                 )
             )
             add("outbounds", JsonArray().apply {
@@ -306,7 +317,8 @@ class SingBoxConfigGenerator {
         ipv6Mode: IPv6RoutingMode,
         mtu: Int,
         lanProxy: LanProxyConfig,
-        internalSocksPort: Int?
+        internalSocksPort: Int?,
+        tunStackMode: TunStackMode
     ): JsonArray {
         return JsonArray().apply {
             add(JsonObject().apply {
@@ -338,7 +350,7 @@ class SingBoxConfigGenerator {
                     }
                 })
                 
-                addProperty("stack", "gvisor")
+                addProperty("stack", tunStackMode.configValue)
                 addProperty("sniff", true)
                 addProperty("sniff_override_destination", true)
             })
@@ -390,7 +402,12 @@ class SingBoxConfigGenerator {
         }
     }
 
-    private fun createOutbounds(nodes: List<Node>, selectedNodeId: String?): JsonArray {
+    private fun createOutbounds(
+        nodes: List<Node>,
+        selectedNodeId: String?,
+        hysteria2UploadMbps: Int,
+        hysteria2DownloadMbps: Int
+    ): JsonArray {
         val outbounds = JsonArray()
         
         // 1. Selector Group (手动选择组)
@@ -428,7 +445,9 @@ class SingBoxConfigGenerator {
         
         // 3. Individual Node Outbounds (具体节点)
         nodes.forEach { node ->
-            outbounds.add(createNodeOutbound(node, node.id))
+            outbounds.add(
+                createNodeOutbound(node, node.id, hysteria2UploadMbps, hysteria2DownloadMbps)
+            )
         }
         
         // 4. Other Outbounds (Direct, Block, DNS)
@@ -450,12 +469,21 @@ class SingBoxConfigGenerator {
         return outbounds
     }
     
-    private fun createNodeOutbound(node: Node, tag: String): JsonObject {
+    private fun createNodeOutbound(
+        node: Node,
+        tag: String,
+        hysteria2UploadMbps: Int? = null,
+        hysteria2DownloadMbps: Int? = null
+    ): JsonObject {
         val outbound = when (node.type) {
             NodeType.VLESS -> createVlessOutbound(node)
             NodeType.VMESS -> createVmessOutbound(node)
             NodeType.TROJAN -> createTrojanOutbound(node)
-            NodeType.HYSTERIA2 -> createHysteria2Outbound(node)
+            NodeType.HYSTERIA2 -> createHysteria2Outbound(
+                node,
+                hysteria2UploadMbps,
+                hysteria2DownloadMbps
+            )
             NodeType.ANYTLS -> createAnyTlsOutbound(node)
             NodeType.TUIC -> createTuicOutbound(node)
             NodeType.NAIVE -> createNaiveOutbound(node)
@@ -612,7 +640,11 @@ class SingBoxConfigGenerator {
         }
     }
     
-    private fun createHysteria2Outbound(node: Node): JsonObject {
+    private fun createHysteria2Outbound(
+        node: Node,
+        configuredUploadMbps: Int? = null,
+        configuredDownloadMbps: Int? = null
+    ): JsonObject {
         val rawLink = node.getRawLinkPlain()
         val normalizedLink = rawLink.replace("hy2://", "hysteria2://")
         val uri = Uri.parse(normalizedLink)
@@ -629,8 +661,20 @@ class SingBoxConfigGenerator {
             }
             addProperty("password", uri.userInfo ?: "")
             queryParamFirst(uri, "hopInterval", "hop_interval")?.let { addProperty("hop_interval", it) }
-            queryParamFirst(uri, "upmbps", "up_mbps", "upMbps")?.toIntOrNull()?.let { addProperty("up_mbps", it) }
-            queryParamFirst(uri, "downmbps", "down_mbps", "downMbps")?.toIntOrNull()?.let { addProperty("down_mbps", it) }
+            val uploadMbps = configuredUploadMbps
+                ?: queryParamFirst(uri, "upmbps", "up_mbps", "upMbps")?.toIntOrNull()
+            val downloadMbps = configuredDownloadMbps
+                ?: queryParamFirst(uri, "downmbps", "down_mbps", "downMbps")?.toIntOrNull()
+            uploadMbps?.coerceIn(
+                AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
+                ?.let { addProperty("up_mbps", it) }
+            downloadMbps?.coerceIn(
+                AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
+                ?.let { addProperty("down_mbps", it) }
             queryParamFirst(uri, "network")?.let { addProperty("network", it) }
             
             add("tls", JsonObject().apply {
@@ -1168,7 +1212,13 @@ class SingBoxConfigGenerator {
         }
     }
     
-    private fun createRoute(proxyMode: ProxyMode, nodeDomains: List<String>, nodeIPs: List<String>, bypassLan: Boolean = true): JsonObject {
+    private fun createRoute(
+        proxyMode: ProxyMode,
+        nodeDomains: List<String>,
+        nodeIPs: List<String>,
+        bypassLan: Boolean = true,
+        ruleOptions: RuleRoutingOptions = RuleRoutingOptions()
+    ): JsonObject {
         val rules = JsonArray()
         
         // 1. 劫持 DNS 流量
@@ -1192,6 +1242,9 @@ class SingBoxConfigGenerator {
                 addProperty("outbound", "direct")
             })
         }
+
+        // 广告规则优先于普通分流，但保留 DNS、局域网和代理服务器防环路规则在前。
+        RuleConfigBuilder.blockingRules(ruleOptions).forEach(rules::add)
         
         if (proxyMode == ProxyMode.SMART) {
             // 4. 中国域名 -> 直接访问（使用 geosite-cn 规则集）
@@ -1232,28 +1285,16 @@ class SingBoxConfigGenerator {
         return JsonObject().apply {
             add("rules", rules)
             
-            // rule_set 声明（智能分流模式需要）
-            if (proxyMode == ProxyMode.SMART) {
-                add("rule_set", JsonArray().apply {
-                    add(JsonObject().apply {
-                        addProperty("tag", "geosite-cn")
-                        addProperty("type", "local")
-                        addProperty("format", "binary")
-                        addProperty("path", "geosite-cn.srs")
-                    })
-                    add(JsonObject().apply {
-                        addProperty("tag", "geoip-cn")
-                        addProperty("type", "local")
-                        addProperty("format", "binary")
-                        addProperty("path", "geoip-cn.srs")
-                    })
-                })
+            val declarations = RuleConfigBuilder.declarations(proxyMode, ruleOptions)
+            if (declarations.size() > 0) {
+                add("rule_set", declarations)
             }
             
             addProperty("final", "proxy")
             addProperty("auto_detect_interface", true)
         }
     }
+
     
 
     

@@ -16,27 +16,29 @@ android {
         applicationId = "xyz.a202132.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.3.0"
+        versionCode = 24
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        ndk {
-            // sing-box核心默认打包了所有架构（armeabi-v7a, arm64-v8a, x86, x86_64）的动态库（.so 文件）
-            // 仅保留 ARM 架构，x86和x86_64架构被剔除以减小 APK 体积
-            abiFilters.add("armeabi-v7a")
-            abiFilters.add("arm64-v8a")
-        }
-
         externalNativeBuild {
             cmake {
                 cppFlags("")
-                // 限制只打包 ARM 架构的 .so 文件
+                // 仅编译需要输出的两种 ARM 架构
                 abiFilters("armeabi-v7a", "arm64-v8a")
             }
+        }
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = false
         }
     }
 
@@ -87,6 +89,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    sourceSets {
+        getByName("androidTest").assets.srcDir("../protocol/crypto-v2/test-vectors")
     }
 
     composeOptions {

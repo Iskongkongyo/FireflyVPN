@@ -133,6 +133,11 @@ object ServiceManager {
         _vpnState.value = VpnState.DISCONNECTED
         _currentNode.value = null
     }
+
+    /** 发布不改变 VPN 状态的提示消息。 */
+    fun notifyMessage(message: String) {
+        _errorMessage.value = message
+    }
     
     /**
      * 清除错误消息

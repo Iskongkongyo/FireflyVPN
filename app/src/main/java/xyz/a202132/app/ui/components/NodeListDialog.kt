@@ -4,6 +4,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -17,10 +19,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -44,8 +54,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,23 +72,28 @@ import xyz.a202132.app.data.model.LatencyLevel
 import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.NodeListCategory
 import xyz.a202132.app.data.model.NodeSource
+import xyz.a202132.app.data.model.NodeGroup
+import xyz.a202132.app.data.model.FAVORITES_NODE_GROUP_ID
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import xyz.a202132.app.ui.theme.LatencyBad
 import xyz.a202132.app.ui.theme.LatencyGood
 import xyz.a202132.app.ui.theme.LatencyMedium
 import xyz.a202132.app.ui.theme.Primary
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NodeListScreen(
-    nodes: List<Node>,
+    allNodes: List<Node>,
+    groups: List<NodeGroup>,
     selectedNodeId: String?,
-    category: NodeListCategory,
-    backupNodeEnabled: Boolean,
+    selectedGroupId: String,
     favoriteSourceNodeIds: Set<String>,
     skipFavoriteRemovalConfirmation: Boolean,
     isTesting: Boolean,
     testingLabel: String? = null,
     onNodeSelected: (Node) -> Unit,
-    onCategoryChange: (NodeListCategory) -> Unit,
+    onGroupChange: (String) -> Unit,
     onToggleFavorite: (Node) -> Unit,
     onSkipFavoriteRemovalConfirmationForSession: () -> Unit,
     onImportFromText: (String) -> Unit,
@@ -120,6 +137,7 @@ fun NodeListScreen(
         subtitle = testingLabel,
         onBack = handleBack,
         backEnabled = !isClosing,
+        contentPadding = PaddingValues(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 16.dp),
         actions = {
             NodeListTopActions(
                 showSearch = showSearch,
@@ -155,17 +173,17 @@ fun NodeListScreen(
         }
     ) {
         NodeListContent(
-            nodes = nodes,
+            allNodes = allNodes,
+            groups = groups,
             selectedNodeId = selectedNodeId,
-            category = category,
-            backupNodeEnabled = backupNodeEnabled,
+            selectedGroupId = selectedGroupId,
             favoriteSourceNodeIds = favoriteSourceNodeIds,
             isTesting = isTesting,
             showSearch = showSearch,
             keyword = keyword,
             onKeywordChange = { keyword = it },
             onNodeSelected = handleNodeSelected,
-            onCategoryChange = onCategoryChange,
+            onGroupChange = onGroupChange,
             onToggleFavorite = handleToggleFavorite,
             interactionEnabled = !isClosing,
         )
@@ -305,12 +323,281 @@ private fun NodeListTopActions(
     }
 }
 
+private data class NodeListPage(
+    val id: String,
+    val label: String,
+    val favorites: Boolean = false,
+    val hasUnreadNodes: Boolean = false
+)
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NodeListContent(
+    allNodes: List<Node>,
+    groups: List<NodeGroup>,
+    selectedNodeId: String?,
+    selectedGroupId: String,
+    favoriteSourceNodeIds: Set<String>,
+    isTesting: Boolean,
+    showSearch: Boolean,
+    keyword: String,
+    onKeywordChange: (String) -> Unit,
+    onNodeSelected: (Node) -> Unit,
+    onGroupChange: (String) -> Unit,
+    onToggleFavorite: (Node, Boolean) -> Unit,
+    interactionEnabled: Boolean
+) {
+    val pages = remember(groups) {
+        groups.map {
+            NodeListPage(
+                id = it.id,
+                label = it.name,
+                favorites = it.isFavorites,
+                hasUnreadNodes = it.hasUnreadNodes
+            )
+        }
+    }
+    val initialPage = pages.indexOfFirst { it.id == selectedGroupId }.coerceAtLeast(0)
+    val pagerState = rememberPagerState(
+        initialPage = initialPage,
+        pageCount = { pages.size }
+    )
+    val groupTabListState = rememberLazyListState(initialFirstVisibleItemIndex = initialPage)
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(selectedGroupId, pages) {
+        val target = pages.indexOfFirst { it.id == selectedGroupId }
+        if (target >= 0 && target != pagerState.currentPage) {
+            pagerState.scrollToPage(target)
+        }
+    }
+    LaunchedEffect(pagerState, pages) {
+        snapshotFlow { pagerState.currentPage }
+            .distinctUntilChanged()
+            .collect { pageIndex ->
+                pages.getOrNull(pageIndex)?.id?.let(onGroupChange)
+            }
+    }
+    LaunchedEffect(pagerState.currentPage, pages.size) {
+        val selectedIndex = pagerState.currentPage.coerceIn(0, (pages.lastIndex).coerceAtLeast(0))
+        val layoutInfo = groupTabListState.layoutInfo
+        val selectedItem = layoutInfo.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
+        val fullyVisible = selectedItem != null &&
+            selectedItem.offset >= layoutInfo.viewportStartOffset &&
+            selectedItem.offset + selectedItem.size <= layoutInfo.viewportEndOffset
+        if (!fullyVisible && pages.isNotEmpty()) {
+            groupTabListState.animateScrollToItem(selectedIndex)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (isTesting) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            LazyRow(
+                state = groupTabListState,
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                itemsIndexed(pages, key = { _, page -> page.id }) { index, page ->
+                    if (index > 0) {
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(22.dp)
+                                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                        )
+                    }
+                    val selected = pages.getOrNull(pagerState.currentPage)?.id == page.id
+                    Box {
+                        Surface(
+                            modifier = Modifier
+                                .widthIn(min = 96.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = interactionEnabled && !isTesting) {
+                                    scope.launch { pagerState.animateScrollToPage(index) }
+                                },
+                            color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = page.label,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                        if (page.hasUnreadNodes) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = (-5).dp, y = 4.dp)
+                                    .size(7.dp)
+                                    .background(MaterialTheme.colorScheme.error, CircleShape)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (showSearch) {
+            OutlinedTextField(
+                value = keyword,
+                onValueChange = onKeywordChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("输入关键词搜索节点") },
+                trailingIcon = {
+                    if (keyword.isNotEmpty()) {
+                        IconButton(onClick = { onKeywordChange("") }, enabled = interactionEnabled) {
+                            Icon(Icons.Default.Close, contentDescription = "清空")
+                        }
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = interactionEnabled && !isTesting
+        ) { pageIndex ->
+            val page = pages[pageIndex]
+            val pageNodes = remember(allNodes, page.id) {
+                if (page.favorites) {
+                    allNodes.filter { it.source == NodeSource.FAVORITE }
+                } else {
+                    allNodes.filter {
+                        it.source == NodeSource.SUBSCRIPTION && it.subscriptionGroupId == page.id
+                    }
+                }
+            }
+            NodeListPageContent(
+                nodes = pageNodes,
+                selectedNodeId = selectedNodeId,
+                favoriteSourceNodeIds = favoriteSourceNodeIds,
+                isTesting = isTesting,
+                keyword = keyword,
+                interactionEnabled = interactionEnabled,
+                onNodeSelected = onNodeSelected,
+                onToggleFavorite = onToggleFavorite
+            )
+        }
+    }
+}
+
+@Composable
+private fun NodeListPageContent(
+    nodes: List<Node>,
+    selectedNodeId: String?,
+    favoriteSourceNodeIds: Set<String>,
+    isTesting: Boolean,
+    keyword: String,
+    interactionEnabled: Boolean,
+    onNodeSelected: (Node) -> Unit,
+    onToggleFavorite: (Node, Boolean) -> Unit
+) {
+    var frozenNodeOrderIds by remember { mutableStateOf<List<String>?>(null) }
+    var wasTesting by remember { mutableStateOf(isTesting) }
+    var pendingScrollToTop by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(isTesting) {
+        if (isTesting && frozenNodeOrderIds == null) {
+            frozenNodeOrderIds = nodes.map { it.id }
+        } else if (!isTesting) {
+            if (wasTesting) pendingScrollToTop = true
+            frozenNodeOrderIds = null
+        }
+        wasTesting = isTesting
+    }
+
+    val displayNodes = remember(nodes, isTesting, frozenNodeOrderIds) {
+        if (!isTesting || frozenNodeOrderIds == null) nodes else {
+            val nodeMap = nodes.associateBy { it.id }
+            frozenNodeOrderIds.orEmpty().mapNotNull(nodeMap::get) +
+                nodes.filterNot { it.id in frozenNodeOrderIds.orEmpty() }
+        }
+    }
+    val filteredNodes = remember(displayNodes, keyword) {
+        val query = keyword.trim()
+        if (query.isBlank()) displayNodes else displayNodes.filter { node ->
+            node.getDisplayName().contains(query, ignoreCase = true) ||
+                node.name.contains(query, ignoreCase = true) ||
+                node.country?.contains(query, ignoreCase = true) == true
+        }
+    }
+
+    LaunchedEffect(pendingScrollToTop, isTesting, filteredNodes.size) {
+        if (pendingScrollToTop && !isTesting && filteredNodes.isNotEmpty()) {
+            withFrameNanos { }
+            listState.scrollToItem(0)
+            pendingScrollToTop = false
+        }
+    }
+
+    when {
+        nodes.isEmpty() -> Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (isTesting) "正在获取节点..." else "暂无可用节点",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 16.sp
+            )
+        }
+        filteredNodes.isEmpty() -> Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("未找到匹配节点", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+        }
+        else -> LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(filteredNodes, key = { it.id }) { node ->
+                val isFavorite = node.source == NodeSource.FAVORITE || favoriteSourceNodeIds.contains(node.id)
+                NodeListItem(
+                    node = node,
+                    isSelected = node.id == selectedNodeId,
+                    isFavorite = isFavorite,
+                    isTesting = isTesting,
+                    enabled = interactionEnabled,
+                    onClick = { onNodeSelected(node) },
+                    onToggleFavorite = { onToggleFavorite(node, isFavorite) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegacyNodeListContent(
     nodes: List<Node>,
     selectedNodeId: String?,
     category: NodeListCategory,
-    backupNodeEnabled: Boolean,
     favoriteSourceNodeIds: Set<String>,
     isTesting: Boolean,
     showSearch: Boolean,
@@ -383,7 +670,7 @@ private fun NodeListContent(
 
         NodeListCategorySwitch(
             category = category,
-            primaryLabel = if (backupNodeEnabled) "\u5907\u7528\u8282\u70b9" else "\u4e3b\u8282\u70b9",
+            primaryLabel = "\u4e3b\u8282\u70b9",
             enabled = interactionEnabled && !isTesting,
             onCategoryChange = onCategoryChange
         )
@@ -576,9 +863,10 @@ private fun NodeListItem(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.weight(1f)
             ) {
-                Text(
-                    text = node.getFlagEmoji(),
-                    fontSize = 24.sp,
+                NodeIcon(
+                    node = node,
+                    size = 28.dp,
+                    flagFontSize = 24.sp,
                     modifier = Modifier.padding(end = 12.dp)
                 )
 

@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import xyz.a202132.app.service.VpnConnectivityRecoveryManager
 import xyz.a202132.app.util.RuleManager
 import xyz.a202132.app.util.RuntimeLog
 import xyz.a202132.app.util.SignatureVerifier
@@ -13,6 +14,7 @@ import xyz.a202132.app.util.SignatureVerifier
 class VpnApplication : Application() {
     
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private lateinit var connectivityRecoveryManager: VpnConnectivityRecoveryManager
     
     override fun onCreate() {
         super.onCreate()
@@ -23,6 +25,9 @@ class VpnApplication : Application() {
         instance = this
         RuntimeLog.init(this)
         RuntimeLog.info("App", "Application started")
+
+        connectivityRecoveryManager = VpnConnectivityRecoveryManager(this, applicationScope)
+        connectivityRecoveryManager.start()
         
         // 后台更新规则集（不阻塞启动，失败不影响使用）
         applicationScope.launch(Dispatchers.IO) {

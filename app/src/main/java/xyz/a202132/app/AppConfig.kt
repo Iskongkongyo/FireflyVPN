@@ -31,29 +31,24 @@ data class UnlockPrioritySite(
 object AppConfig {
     const val STARTUP_SPLASH_DURATION_SECONDS = 10 // 启动图倒计时时长，设为0则不启用
 
-    // API URLs
-    const val SUBSCRIPTION_URL = "https://your-server.com/api/nodes" // 订阅URL
-    const val UPDATE_URL = "https://your-server.com/api/update" // 检查更新URL
-    const val NOTICE_URL = "https://your-server.com/api/notice" // 公告通知URL
-    const val WEBSITE_URL = "https://your-website.com" // 官网网站，留空则隐藏侧边栏中的官方网站
+    // Firefly Edge API（保持生产域名不变，仅使用新版 /api/v2 路由）
+    const val API_BASE_URL = "https://填写你的生产域名"
+    const val BOOTSTRAP_URL = "$API_BASE_URL/api/v2/bootstrap"
+    const val SUBSCRIPTION_URL = "$API_BASE_URL/api/v2/subscriptions"
+    const val USAGE_REPORT_URL = "$API_BASE_URL/api/v2/usage/report"
 
     // API timeout (milliseconds) for retry-controlled requests
     const val NODE_REQUEST_TIMEOUT_MS = 25000L // 节点请求超时（毫秒）
-    const val NOTICE_REQUEST_TIMEOUT_MS = 25000L // 公告请求超时（毫秒）
-    const val UPDATE_REQUEST_TIMEOUT_MS = 25000L // 更新请求超时（毫秒）
-    
-    // Contact
-
-    // 反馈邮箱和反馈链接均留空会自动隐藏侧边栏中的用户反馈
-    const val FEEDBACK_EMAIL = "support@your-domain.com" // 反馈邮箱，留空则不跳转
-    const val FEEDBACK_URL = "https://github.com/your-username/your-repo/issues"  // 反馈链接，留空则不跳转
-    const val GITHUB_URL = "https://github.com/your-username/your-repo"  // 项目源码地址，留空则隐藏关于页相关按钮
     
     // Latency Test
     // 常用http://cp.cloudflare.com/generate_204或https://www.google.com/generate_204
     const val TCPING_TEST_TIMEOUT = 3000L // TCPing 超时（毫秒）
     
     const val URL_TEST_URL = "https://www.google.com/generate_204" // URL Test测试URL
+    val VPN_HEALTH_CHECK_URLS = listOf(
+        URL_TEST_URL,
+        "https://cp.cloudflare.com/generate_204"
+    )
     const val URL_TEST_TIMEOUT = 3000L // URL Test 超时（毫秒）
     const val URL_TEST_RETRY_COUNT = 1 // URL Test 自动重试次数，仅对503/504或异常生效
     
@@ -70,6 +65,17 @@ object AppConfig {
     const val VPN_DNS_PRIMARY = "8.8.8.8"
     const val VPN_DNS_SECONDARY = "8.8.4.4"
     const val VPN_DNS_CHINA = "223.5.5.5" // 国内 DNS（智能分流模式使用）
+    const val VPN_HEALTH_CHECK_INTERVAL_MS = 6_000L
+    const val VPN_HEALTH_CHECK_RETRY_DELAY_MS = 1_000L
+    const val VPN_HEALTH_CHECK_FAILURE_THRESHOLD = 3
+    const val VPN_HEALTH_CHECK_TIMEOUT_MS = 4_000L
+    const val VPN_RECOVERY_COOLDOWN_MS = 5 * 60_000L
+    const val VPN_CONNECTIVITY_RECOVERY_DEFAULT_ENABLED = true
+    const val HYSTERIA2_DEFAULT_BANDWIDTH_MBPS = 50
+    const val HYSTERIA2_MIN_BANDWIDTH_MBPS = 20
+    const val HYSTERIA2_MAX_BANDWIDTH_MBPS = 10_000
+    const val HYSTERIA2_ADAPTIVE_TEST_BYTES = 25_000_000L
+    const val HYSTERIA2_ADAPTIVE_SAFETY_RATIO = 0.8f
     val HTTP_USER_AGENT: String
         get() = "FireflyVPN/${xyz.a202132.app.BuildConfig.VERSION_NAME}"
 
@@ -158,7 +164,7 @@ object AppConfig {
         return sizes
     }
 
-    // 流媒体解锁大概测试的网站名（不懂的话不要改）
+    // 流媒体解锁大概测试的网站名
     val UNLOCK_PRIORITY_PRESET_SITES: List<UnlockPrioritySite> = listOf(
         UnlockPrioritySite("apple", "Apple", listOf("Apple")),
         UnlockPrioritySite("bing_search", "BingSearch", listOf("BingSearch")),

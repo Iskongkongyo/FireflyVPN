@@ -16,10 +16,13 @@ import xyz.a202132.app.MainActivity
 import xyz.a202132.app.R
 import xyz.a202132.app.data.local.NodeDao
 import xyz.a202132.app.data.model.Node
-import xyz.a202132.app.data.model.NodeListCategory
+import xyz.a202132.app.data.model.FAVORITES_NODE_GROUP_ID
 import xyz.a202132.app.data.model.NodeSource
 import xyz.a202132.app.data.model.ProxyMode
+import xyz.a202132.app.data.model.TunStackMode
 import xyz.a202132.app.data.repository.SettingsRepository
+import xyz.a202132.app.rules.model.RuleRoutingOptions
+import xyz.a202132.app.network.FireflyUsageReporter
 import xyz.a202132.app.util.LanProxyConfig
 import xyz.a202132.app.util.SingBoxConfigGenerator
 import xyz.a202132.app.util.RuleManager
@@ -89,8 +92,10 @@ class BoxVpnService : VpnService() {
     private var commandServer: io.nekohasekai.libbox.CommandServer? = null
     private var platformInterface: BoxPlatformInterface? = null
     private val configGenerator = SingBoxConfigGenerator()
+    private val usageReporter by lazy { FireflyUsageReporter(applicationContext) }
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var isStopping = false
+    @Volatile private var currentUsageSessionId: String? = null
     
     override fun onCreate() {
         super.onCreate()
@@ -213,6 +218,26 @@ class BoxVpnService : VpnService() {
                 } catch (e: Exception) {
                     AppConfig.VPN_MTU
                 }
+                val tunStackMode = try {
+                    settingsRepo.tunStackMode.first()
+                } catch (e: Exception) {
+                    TunStackMode.GVISOR
+                }
+                val ruleOptions = try {
+                    settingsRepo.ruleRoutingOptions.first()
+                } catch (e: Exception) {
+                    RuleRoutingOptions()
+                }
+                val hysteria2UploadMbps = try {
+                    settingsRepo.hysteria2UploadMbps.first()
+                } catch (e: Exception) {
+                    AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+                }
+                val hysteria2DownloadMbps = try {
+                    settingsRepo.hysteria2DownloadMbps.first()
+                } catch (e: Exception) {
+                    AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+                }
                 val lanProxy = readLanProxyConfig(settingsRepo, keepConfiguredPort = keepLanProxyPort)
                 val internalSocksPort = pickFreeInternalSocksPort(lanProxy)
                 
@@ -230,7 +255,11 @@ class BoxVpnService : VpnService() {
                     ipv6Mode,
                     vpnMtu,
                     lanProxy,
-                    internalSocksPort
+                    internalSocksPort,
+                    hysteria2UploadMbps,
+                    hysteria2DownloadMbps,
+                    tunStackMode,
+                    ruleOptions
                 )
                 Libbox.checkConfig(config)
                 deleteLegacyConfigFile()
@@ -318,6 +347,8 @@ class BoxVpnService : VpnService() {
                     // 通知UI更新
                     ServiceManager.notifyStateChange()
                 }
+                currentUsageSessionId = usageReporter.newSessionId()
+                usageReporter.flushAsync()
                 
                 Log.d(TAG, "VPN started successfully with libbox")
                 RuntimeLog.info(TAG, "VPN started successfully")
@@ -698,9 +729,11 @@ class BoxVpnService : VpnService() {
         nodeDao: NodeDao,
         settingsRepo: SettingsRepository
     ): List<Node> {
-        return when (settingsRepo.nodeListCategory.first()) {
-            NodeListCategory.PRIMARY -> nodeDao.getSubscriptionNodes().first()
-            NodeListCategory.FAVORITES -> nodeDao.getFavoriteNodes().first()
+        val groupId = settingsRepo.selectedNodeGroupId.first()
+        return if (groupId == FAVORITES_NODE_GROUP_ID) {
+            nodeDao.getFavoriteNodes().first()
+        } else {
+            nodeDao.getSubscriptionNodes(groupId).first()
         }
     }
 
@@ -857,6 +890,26 @@ class BoxVpnService : VpnService() {
                     } catch (e: Exception) {
                         AppConfig.VPN_MTU
                     }
+                    val tunStackMode = try {
+                        settingsRepo.tunStackMode.first()
+                    } catch (e: Exception) {
+                        TunStackMode.GVISOR
+                    }
+                    val ruleOptions = try {
+                        settingsRepo.ruleRoutingOptions.first()
+                    } catch (e: Exception) {
+                        RuleRoutingOptions()
+                    }
+                    val hysteria2UploadMbps = try {
+                        settingsRepo.hysteria2UploadMbps.first()
+                    } catch (e: Exception) {
+                        AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+                    }
+                    val hysteria2DownloadMbps = try {
+                        settingsRepo.hysteria2DownloadMbps.first()
+                    } catch (e: Exception) {
+                        AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+                    }
                     val lanProxy = readLanProxyConfig(settingsRepo, keepConfiguredPort = true)
                     val internalSocksPort = pickFreeInternalSocksPort(lanProxy)
 
@@ -899,7 +952,11 @@ class BoxVpnService : VpnService() {
                         ipv6Mode,
                         vpnMtu,
                         lanProxy,
-                        internalSocksPort
+                        internalSocksPort,
+                        hysteria2UploadMbps,
+                        hysteria2DownloadMbps,
+                        tunStackMode,
+                        ruleOptions
                     )
                     Libbox.checkConfig(config)
                     deleteLegacyConfigFile()
@@ -1040,6 +1097,7 @@ class BoxVpnService : VpnService() {
     
     private suspend fun stopVpnInternal() {
         try {
+            finishUsageSession()
             // 切换到 IO 线程执行清理，避免主线程卡顿（如果 cleanup 耗时）
             // 但对于 onDestroy，我们必须同步清理
             withContext(Dispatchers.IO) {
@@ -1078,6 +1136,7 @@ class BoxVpnService : VpnService() {
     
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
+        finishUsageSession()
         // 立即取消所有协程
         serviceScope.cancel()
 
@@ -1097,6 +1156,12 @@ class BoxVpnService : VpnService() {
         ServiceManager.notifyStateChange()
         
         super.onDestroy()
+    }
+
+    private fun finishUsageSession() {
+        val sessionId = currentUsageSessionId ?: return
+        currentUsageSessionId = null
+        usageReporter.enqueueAndFlush(sessionId, uploadTotal, downloadTotal)
     }
     
     private fun createNotificationChannel() {

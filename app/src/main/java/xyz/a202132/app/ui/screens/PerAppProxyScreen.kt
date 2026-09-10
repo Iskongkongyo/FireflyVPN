@@ -14,7 +14,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.viewmodel.compose.viewModel
 import xyz.a202132.app.data.model.PerAppProxyMode
+import xyz.a202132.app.R
 import xyz.a202132.app.ui.theme.Primary
 import xyz.a202132.app.viewmodel.AppInfo
 import xyz.a202132.app.viewmodel.PerAppProxyViewModel
@@ -91,7 +92,10 @@ fun PerAppProxyScreen(
                 actions = {
                     // 反选按钮
                     IconButton(onClick = { viewModel.invertSelection() }) {
-                        Icon(Icons.Filled.SwapVert, contentDescription = "反选")
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_invert_selection),
+                            contentDescription = "反选"
+                        )
                     }
                     // 取消全选按钮
                     IconButton(onClick = { viewModel.deselectAll() }) {
@@ -230,6 +234,28 @@ fun PerAppProxyScreen(
                             modifier = Modifier.weight(1f)
                         )
                     }
+
+                    if (isEnabled) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Primary.copy(alpha = 0.1f)
+                            )
+                        ) {
+                            Text(
+                                text = if (mode == PerAppProxyMode.WHITELIST) {
+                                    "💡 代理模式：只有选中的应用流量会经过 VPN"
+                                } else {
+                                    "💡 绕过模式：选中的应用流量会绕过 VPN 直连"
+                                },
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
                 }
             }
             
@@ -333,29 +359,6 @@ fun PerAppProxyScreen(
                 }
             }
             
-            // 提示信息 (如果没显示权限警告，则显示普通提示)
-            if (isEnabled && !isPermissionDenied) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Primary.copy(alpha = 0.1f)
-                    )
-                ) {
-                    Text(
-                        text = if (mode == PerAppProxyMode.WHITELIST) {
-                            "💡 代理模式：只有选中的应用流量会经过 VPN"
-                        } else {
-                            "💡 绕过模式：选中的应用流量会绕过 VPN 直连"
-                        },
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            }
         }
 
     }

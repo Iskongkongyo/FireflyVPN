@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -35,7 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,10 +42,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import xyz.a202132.app.data.model.Node
+import xyz.a202132.app.ui.components.NodeIcon
+import xyz.a202132.app.viewmodel.BestNodePriority
 
 @Composable
 fun AutoTestResultDialog(
     nodes: List<Node>,
+    priority: BestNodePriority = BestNodePriority.LATENCY,
     onDismiss: () -> Unit,
     onNodeClick: (Node) -> Unit,
     autoConnectLabel: String = "自动连接最优",
@@ -54,6 +56,9 @@ fun AutoTestResultDialog(
 ) {
     var showSearch by remember { mutableStateOf(false) }
     var keyword by remember { mutableStateOf("") }
+    val rankById = remember(nodes) {
+        nodes.mapIndexed { index, node -> node.id to index + 1 }.toMap()
+    }
     val filteredNodes = remember(nodes, keyword) {
         val q = keyword.trim()
         if (q.isBlank()) nodes else nodes.filter {
@@ -86,7 +91,15 @@ fun AutoTestResultDialog(
                 ) {
                     Column {
                         Text("自动化测试完成", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        Text("符合要求节点: ${filteredNodes.size}/${nodes.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (keyword.isBlank()) {
+                                "${resultPriorityLabel(priority)}排序 · ${nodes.size} 个节点"
+                            } else {
+                                "${resultPriorityLabel(priority)}排序 · 搜索匹配 ${filteredNodes.size}/${nodes.size}"
+                            },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     Row {
                         IconButton(onClick = { showSearch = !showSearch }) {
@@ -122,7 +135,7 @@ fun AutoTestResultDialog(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredNodes, key = { it.id }) { node ->
+                        itemsIndexed(filteredNodes, key = { _, node -> node.id }) { _, node ->
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -137,15 +150,28 @@ fun AutoTestResultDialog(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Text(
+                                        text = "${rankById[node.id] ?: "-"}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(end = 8.dp)
+                                    )
+                                    NodeIcon(
+                                        node = node,
+                                        size = 24.dp,
+                                        flagFontSize = 20.sp,
+                                        modifier = Modifier.padding(end = 8.dp)
+                                    )
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "${node.getFlagEmoji()} ${node.getDisplayName()}",
+                                            text = node.getDisplayName(),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             fontWeight = FontWeight.Medium
                                         )
                                         Text(
-                                            text = "延迟 ${node.getLatencyText()} | 带宽 ${if (node.downloadMbps > 0f) "%.1f".format(node.downloadMbps) + " Mbps" else "暂无"}",
+                                            text = resultMetricText(node, priority),
                                             fontSize = 12.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -167,6 +193,7 @@ fun AutoTestResultDialog(
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = onAutoConnectBest,
+                        enabled = nodes.isNotEmpty(),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(autoConnectLabel)
@@ -177,13 +204,39 @@ fun AutoTestResultDialog(
     }
 }
 
+private fun resultMetricText(node: Node, priority: BestNodePriority): String = when (priority) {
+    BestNodePriority.LATENCY ->
+        "延迟 ${node.getLatencyText()} · 下行 ${formatMbps(node.downloadMbps)}"
+    BestNodePriority.DOWNLOAD ->
+        "下行 ${formatMbps(node.downloadMbps)} · 延迟 ${node.getLatencyText()}"
+    BestNodePriority.UPLOAD ->
+        "上行 ${formatMbps(node.uploadMbps)} · 延迟 ${node.getLatencyText()}"
+    BestNodePriority.UNLOCK_COUNT -> {
+        val count = Regex("""\bYES\s*=\s*(\d+)""", RegexOption.IGNORE_CASE)
+            .find(node.unlockSummary)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: if (node.unlockPassed) "已通过" else "未通过"
+        "解锁 $count · 延迟 ${node.getLatencyText()}"
+    }
+}
+
+private fun resultPriorityLabel(priority: BestNodePriority): String = when (priority) {
+    BestNodePriority.LATENCY -> "延迟优先"
+    BestNodePriority.DOWNLOAD -> "下行优先"
+    BestNodePriority.UPLOAD -> "上行优先"
+    BestNodePriority.UNLOCK_COUNT -> "解锁优先"
+}
+
+private fun formatMbps(value: Float): String =
+    if (value > 0f) "%.1f Mbps".format(value) else "暂无"
+
 @Composable
 fun AutoTestDetailDialog(
     node: Node,
     onDismiss: () -> Unit,
     onUseNode: (Node) -> Unit
 ) {
-    val context = LocalContext.current
     val content = buildDetailText(node)
     val scroll = rememberScrollState()
 

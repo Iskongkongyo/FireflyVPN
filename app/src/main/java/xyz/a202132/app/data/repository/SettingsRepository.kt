@@ -5,14 +5,19 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.a202132.app.data.model.AppThemeMode
 import xyz.a202132.app.data.model.IPv6RoutingMode
 import xyz.a202132.app.data.model.NodeListCategory
+import xyz.a202132.app.data.model.DEFAULT_SUBSCRIPTION_GROUP_ID
+import xyz.a202132.app.data.model.FAVORITES_NODE_GROUP_ID
 import xyz.a202132.app.data.model.PerAppProxyMode
 import xyz.a202132.app.data.model.ProxyMode
+import xyz.a202132.app.data.model.TunStackMode
+import xyz.a202132.app.rules.model.RuleRoutingOptions
 import xyz.a202132.app.viewmodel.AutoTestLatencyMode
 import xyz.a202132.app.viewmodel.BestNodePriority
 import xyz.a202132.app.viewmodel.BUILTIN_PREFER_MODE_CHAT
@@ -20,6 +25,7 @@ import xyz.a202132.app.viewmodel.StartupDefaultTestMode
 import xyz.a202132.app.viewmodel.TestPreferMode
 import xyz.a202132.app.viewmodel.UnlockPriorityMode
 import xyz.a202132.app.viewmodel.normalizePreferTestModes
+import xyz.a202132.app.viewmodel.normalizePriorityOrder
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
@@ -44,11 +50,8 @@ class SettingsRepository(private val context: Context) {
         
         // IPv6 路由设置
         private val IPV6_ROUTING_MODE = stringPreferencesKey("ipv6_routing_mode")
+        private val TUN_STACK_MODE = stringPreferencesKey("tun_stack_mode")
         
-        // 备用节点
-        private val BACKUP_NODE_ENABLED = booleanPreferencesKey("backup_node_enabled")
-        private val BACKUP_NODE_URL = stringPreferencesKey("backup_node_url")
-
         // 自动化测试设置
         private val AUTO_TEST_ENABLED = booleanPreferencesKey("auto_test_enabled")
         private val AUTO_TEST_FILTER_UNAVAILABLE = booleanPreferencesKey("auto_test_filter_unavailable")
@@ -76,12 +79,13 @@ class SettingsRepository(private val context: Context) {
         private val REMEMBER_LAST_SELECTED_NODE_ENABLED = booleanPreferencesKey("remember_last_selected_node_enabled")
         private val LAST_SELECTED_NODE_ID = stringPreferencesKey("last_selected_node_id")
         private val NODE_LIST_CATEGORY = stringPreferencesKey("node_list_category")
+        private val SELECTED_NODE_GROUP_ID = stringPreferencesKey("selected_node_group_id")
+        private val FAVORITES_GROUP_SORT_ORDER = intPreferencesKey("favorites_group_sort_order")
+        private val BUILT_IN_GROUP_IDS_INITIALIZED = booleanPreferencesKey("built_in_group_ids_initialized")
+        private val KNOWN_BUILT_IN_GROUP_IDS = stringSetPreferencesKey("known_built_in_group_ids")
+        private val UNREAD_BUILT_IN_GROUP_IDS = stringSetPreferencesKey("unread_built_in_group_ids")
         private val NODE_IP_INFO_TEST_ON_VPN_START = booleanPreferencesKey("node_ip_info_test_on_vpn_start")
-        private val SCHEDULED_NODE_UPDATE_ENABLED = booleanPreferencesKey("scheduled_node_update_enabled")
-        private val SCHEDULED_NODE_UPDATE_HOURS = intPreferencesKey("scheduled_node_update_hours")
-        private val SCHEDULED_NODE_UPDATE_MINUTES = intPreferencesKey("scheduled_node_update_minutes")
-        private val NODE_AUTO_RECONNECT = booleanPreferencesKey("node_auto_reconnect")
-        private val SCHEDULED_NODE_UPDATE_TOAST_ENABLED = booleanPreferencesKey("scheduled_node_update_toast_enabled")
+        private val VPN_CONNECTIVITY_RECOVERY_ENABLED = booleanPreferencesKey("vpn_connectivity_recovery_enabled")
         private val TCPING_TEST_TIMEOUT_MS = longPreferencesKey("tcping_test_timeout_ms")
         private val URL_TEST_TIMEOUT_MS = longPreferencesKey("url_test_timeout_ms")
         private val NODE_IP_INFO_TIMEOUT_MS = longPreferencesKey("node_ip_info_timeout_ms")
@@ -91,6 +95,11 @@ class SettingsRepository(private val context: Context) {
         private val BANDWIDTH_TEST_CONCURRENCY = intPreferencesKey("bandwidth_test_concurrency")
         private val UNLOCK_TEST_CONCURRENCY = intPreferencesKey("unlock_test_concurrency")
         private val VPN_MTU = intPreferencesKey("vpn_mtu")
+        private val HYSTERIA2_UPLOAD_MBPS = intPreferencesKey("hysteria2_upload_mbps")
+        private val HYSTERIA2_DOWNLOAD_MBPS = intPreferencesKey("hysteria2_download_mbps")
+        private val ANTI_AD_ENABLED = booleanPreferencesKey("anti_ad_enabled")
+        private val AD_RULES_ENABLED = booleanPreferencesKey("ad_rules_enabled")
+        private val BLOCK_QUIC_ENABLED = booleanPreferencesKey("block_quic_enabled")
 
         private val LAN_PROXY_ENABLED = booleanPreferencesKey("lan_proxy_enabled")
         private val LAN_PROXY_AUTO_PORT = booleanPreferencesKey("lan_proxy_auto_port")
@@ -114,6 +123,20 @@ class SettingsRepository(private val context: Context) {
         runCatching {
             NodeListCategory.valueOf(preferences[NODE_LIST_CATEGORY] ?: NodeListCategory.PRIMARY.name)
         }.getOrDefault(NodeListCategory.PRIMARY)
+    }
+
+    val selectedNodeGroupId: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[SELECTED_NODE_GROUP_ID] ?: if (
+            preferences[NODE_LIST_CATEGORY] == NodeListCategory.FAVORITES.name
+        ) FAVORITES_NODE_GROUP_ID else DEFAULT_SUBSCRIPTION_GROUP_ID
+    }
+
+    val favoritesGroupSortOrder: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[FAVORITES_GROUP_SORT_ORDER] ?: Int.MAX_VALUE
+    }
+
+    val unreadBuiltInGroupIds: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        preferences[UNREAD_BUILT_IN_GROUP_IDS] ?: emptySet()
     }
     
     val proxyMode: Flow<ProxyMode> = context.dataStore.data.map { preferences ->
@@ -183,6 +206,46 @@ class SettingsRepository(private val context: Context) {
     suspend fun setNodeListCategory(category: NodeListCategory) {
         context.dataStore.edit { preferences ->
             preferences[NODE_LIST_CATEGORY] = category.name
+        }
+    }
+
+    suspend fun setSelectedNodeGroupId(groupId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[SELECTED_NODE_GROUP_ID] = groupId
+            preferences[NODE_LIST_CATEGORY] = if (groupId == FAVORITES_NODE_GROUP_ID) {
+                NodeListCategory.FAVORITES.name
+            } else {
+                NodeListCategory.PRIMARY.name
+            }
+            preferences[UNREAD_BUILT_IN_GROUP_IDS] =
+                (preferences[UNREAD_BUILT_IN_GROUP_IDS] ?: emptySet()) - groupId
+        }
+    }
+
+    /**
+     * 记录服务端已经返回过的内置分组 ID。第一次成功获取只建立基线，之后才返回新增 ID。
+     */
+    suspend fun recordBuiltInGroupIds(groupIds: Set<String>): Set<String> {
+        var newlyAddedIds = emptySet<String>()
+        context.dataStore.edit { preferences ->
+            val initialized = preferences[BUILT_IN_GROUP_IDS_INITIALIZED] ?: false
+            val knownIds = preferences[KNOWN_BUILT_IN_GROUP_IDS] ?: emptySet()
+            if (initialized) {
+                newlyAddedIds = groupIds - knownIds
+                if (newlyAddedIds.isNotEmpty()) {
+                    preferences[UNREAD_BUILT_IN_GROUP_IDS] =
+                        (preferences[UNREAD_BUILT_IN_GROUP_IDS] ?: emptySet()) + newlyAddedIds
+                }
+            }
+            preferences[KNOWN_BUILT_IN_GROUP_IDS] = knownIds + groupIds
+            preferences[BUILT_IN_GROUP_IDS_INITIALIZED] = true
+        }
+        return newlyAddedIds
+    }
+
+    suspend fun setFavoritesGroupSortOrder(sortOrder: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[FAVORITES_GROUP_SORT_ORDER] = sortOrder.coerceAtLeast(0)
         }
     }
     
@@ -260,32 +323,19 @@ class SettingsRepository(private val context: Context) {
             preferences[IPV6_ROUTING_MODE] = mode.name
         }
     }
-    
-    // 备用节点
-    val backupNodeEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[BACKUP_NODE_ENABLED] ?: false
-    }
-    
-    suspend fun setBackupNodeEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[BACKUP_NODE_ENABLED] = enabled
-        }
-    }
-    
-    val backupNodeUrl: Flow<String?> = context.dataStore.data.map { preferences ->
-        preferences[BACKUP_NODE_URL]
-    }
-    
-    suspend fun setBackupNodeUrl(url: String?) {
-        context.dataStore.edit { preferences ->
-            if (url == null) {
-                preferences.remove(BACKUP_NODE_URL)
-            } else {
-                preferences[BACKUP_NODE_URL] = url
-            }
-        }
+
+    val tunStackMode: Flow<TunStackMode> = context.dataStore.data.map { preferences ->
+        runCatching {
+            TunStackMode.valueOf(preferences[TUN_STACK_MODE] ?: TunStackMode.GVISOR.name)
+        }.getOrDefault(TunStackMode.GVISOR)
     }
 
+    suspend fun setTunStackMode(mode: TunStackMode) {
+        context.dataStore.edit { preferences ->
+            preferences[TUN_STACK_MODE] = mode.name
+        }
+    }
+    
     val lanProxyEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[LAN_PROXY_ENABLED] ?: false
     }
@@ -571,6 +621,29 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun applyPreferTestMode(mode: TestPreferMode) {
+        context.dataStore.edit { preferences ->
+            preferences[PREFER_TEST_SELECTED_MODE_ID] = mode.id
+            preferences[AUTO_TEST_FILTER_UNAVAILABLE] = mode.filterUnavailable
+            preferences[AUTO_TEST_LATENCY_ENABLED] = mode.latencyEnabled
+            preferences[AUTO_TEST_LATENCY_MODE] = mode.latencyMode.name
+            preferences[AUTO_TEST_LATENCY_THRESHOLD] = mode.latencyThresholdMs.coerceAtLeast(50)
+            preferences[AUTO_TEST_BANDWIDTH_ENABLED] = mode.bandwidthEnabled
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_ENABLED] = mode.bandwidthDownloadEnabled
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_ENABLED] = mode.bandwidthUploadEnabled
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_THRESHOLD] =
+                mode.bandwidthDownloadThresholdMbps.coerceAtLeast(1)
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_THRESHOLD] =
+                mode.bandwidthUploadThresholdMbps.coerceAtLeast(1)
+            preferences[AUTO_TEST_BANDWIDTH_WIFI_ONLY] = mode.bandwidthWifiOnly
+            preferences[AUTO_TEST_BANDWIDTH_DOWNLOAD_SIZE_MB] = normalizeSize(mode.bandwidthDownloadSizeMb)
+            preferences[AUTO_TEST_BANDWIDTH_UPLOAD_SIZE_MB] = normalizeSize(mode.bandwidthUploadSizeMb)
+            preferences[AUTO_TEST_UNLOCK_ENABLED] = mode.unlockEnabled
+            preferences[AUTO_TEST_BY_REGION] = mode.byRegion
+            preferences[AUTO_TEST_NODE_LIMIT] = mode.nodeLimit.coerceIn(1, 200)
+        }
+    }
+
     val startupDefaultTestMode: Flow<StartupDefaultTestMode> = context.dataStore.data.map { preferences ->
         val value = preferences[STARTUP_DEFAULT_TEST_MODE] ?: StartupDefaultTestMode.NONE.name
         runCatching { StartupDefaultTestMode.valueOf(value) }.getOrDefault(StartupDefaultTestMode.NONE)
@@ -631,54 +704,76 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    val scheduledNodeUpdateEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[SCHEDULED_NODE_UPDATE_ENABLED] ?: false
+    val vpnConnectivityRecoveryEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[VPN_CONNECTIVITY_RECOVERY_ENABLED]
+            ?: xyz.a202132.app.AppConfig.VPN_CONNECTIVITY_RECOVERY_DEFAULT_ENABLED
     }
 
-    suspend fun setScheduledNodeUpdateEnabled(enabled: Boolean) {
+    suspend fun setVpnConnectivityRecoveryEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[SCHEDULED_NODE_UPDATE_ENABLED] = enabled
+            preferences[VPN_CONNECTIVITY_RECOVERY_ENABLED] = enabled
         }
     }
 
-    val scheduledNodeUpdateHours: Flow<Int> = context.dataStore.data.map { preferences ->
-        (preferences[SCHEDULED_NODE_UPDATE_HOURS] ?: 0).coerceIn(0, 168)
+    val hysteria2UploadMbps: Flow<Int> = context.dataStore.data.map { preferences ->
+        (preferences[HYSTERIA2_UPLOAD_MBPS] ?: xyz.a202132.app.AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS)
+            .coerceIn(
+                xyz.a202132.app.AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                xyz.a202132.app.AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
     }
 
-    suspend fun setScheduledNodeUpdateHours(hours: Int) {
+    val hysteria2DownloadMbps: Flow<Int> = context.dataStore.data.map { preferences ->
+        (preferences[HYSTERIA2_DOWNLOAD_MBPS] ?: xyz.a202132.app.AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS)
+            .coerceIn(
+                xyz.a202132.app.AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                xyz.a202132.app.AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
+    }
+
+    suspend fun setHysteria2Bandwidth(uploadMbps: Int, downloadMbps: Int) {
         context.dataStore.edit { preferences ->
-            preferences[SCHEDULED_NODE_UPDATE_HOURS] = hours.coerceIn(0, 168)
+            preferences[HYSTERIA2_UPLOAD_MBPS] = uploadMbps.coerceIn(
+                xyz.a202132.app.AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                xyz.a202132.app.AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
+            preferences[HYSTERIA2_DOWNLOAD_MBPS] = downloadMbps.coerceIn(
+                xyz.a202132.app.AppConfig.HYSTERIA2_MIN_BANDWIDTH_MBPS,
+                xyz.a202132.app.AppConfig.HYSTERIA2_MAX_BANDWIDTH_MBPS
+            )
         }
     }
 
-    val scheduledNodeUpdateMinutes: Flow<Int> = context.dataStore.data.map { preferences ->
-        (preferences[SCHEDULED_NODE_UPDATE_MINUTES] ?: 30).coerceIn(0, 59)
+    val antiAdEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[ANTI_AD_ENABLED] ?: true
     }
 
-    suspend fun setScheduledNodeUpdateMinutes(minutes: Int) {
-        context.dataStore.edit { preferences ->
-            preferences[SCHEDULED_NODE_UPDATE_MINUTES] = minutes.coerceIn(0, 59)
-        }
+    val adRulesEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[AD_RULES_ENABLED] ?: false
     }
 
-    val nodeAutoReconnect: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[NODE_AUTO_RECONNECT] ?: false
+    val blockQuicEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[BLOCK_QUIC_ENABLED] ?: false
     }
 
-    suspend fun setNodeAutoReconnect(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[NODE_AUTO_RECONNECT] = enabled
-        }
+    val ruleRoutingOptions: Flow<RuleRoutingOptions> = combine(
+        antiAdEnabled,
+        adRulesEnabled,
+        blockQuicEnabled
+    ) { antiAd, adRules, blockQuic ->
+        RuleRoutingOptions(antiAd, adRules, blockQuic)
     }
 
-    val scheduledNodeUpdateToastEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[SCHEDULED_NODE_UPDATE_TOAST_ENABLED] ?: true
+    suspend fun setAntiAdEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[ANTI_AD_ENABLED] = enabled }
     }
 
-    suspend fun setScheduledNodeUpdateToastEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[SCHEDULED_NODE_UPDATE_TOAST_ENABLED] = enabled
-        }
+    suspend fun setAdRulesEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[AD_RULES_ENABLED] = enabled }
+    }
+
+    suspend fun setBlockQuicEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[BLOCK_QUIC_ENABLED] = enabled }
     }
 
     val tcpingTestTimeoutMs: Flow<Long> = context.dataStore.data.map { preferences ->
@@ -796,8 +891,10 @@ class SettingsRepository(private val context: Context) {
                     put("byRegion", mode.byRegion)
                     put("nodeLimit", mode.nodeLimit)
                     put("defaultPriority", mode.defaultPriority.name)
+                    put("priorityOrder", JSONArray(mode.priorityOrder.map { it.name }))
                     put("unlockPriorityMode", mode.unlockPriorityMode.name)
                     put("unlockPriorityTargetSiteIds", JSONArray(mode.unlockPriorityTargetSiteIds))
+                    put("autoConnectBest", mode.autoConnectBest)
                 }
             )
         }
@@ -818,6 +915,18 @@ class SettingsRepository(private val context: Context) {
             val defaultPriority = runCatching {
                 BestNodePriority.valueOf(obj.optString("defaultPriority", BestNodePriority.LATENCY.name))
             }.getOrDefault(BestNodePriority.LATENCY)
+            val priorityOrder = obj.optJSONArray("priorityOrder")
+                ?.let { arr ->
+                    buildList {
+                        for (j in 0 until arr.length()) {
+                            runCatching { BestNodePriority.valueOf(arr.optString(j)) }
+                                .getOrNull()
+                                ?.let(::add)
+                        }
+                    }
+                }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf(defaultPriority)
             val unlockPriorityMode = runCatching {
                 UnlockPriorityMode.valueOf(obj.optString("unlockPriorityMode", UnlockPriorityMode.COUNT.name))
             }.getOrDefault(UnlockPriorityMode.COUNT)
@@ -851,9 +960,11 @@ class SettingsRepository(private val context: Context) {
                 byRegion = obj.optBoolean("byRegion", false),
                 nodeLimit = obj.optInt("nodeLimit", 20).coerceIn(1, 200),
                 defaultPriority = defaultPriority,
+                priorityOrder = priorityOrder,
                 unlockPriorityMode = unlockPriorityMode,
-                unlockPriorityTargetSiteIds = unlockPriorityTargetSiteIds
-            )
+                unlockPriorityTargetSiteIds = unlockPriorityTargetSiteIds,
+                autoConnectBest = obj.optBoolean("autoConnectBest", false)
+            ).normalizePriorityOrder()
         }
         return normalizePreferTestModes(list)
     }

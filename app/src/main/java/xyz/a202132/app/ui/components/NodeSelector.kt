@@ -1,12 +1,10 @@
 package xyz.a202132.app.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -42,29 +40,11 @@ fun NodeSelector(
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 图标 (有节点时显示国旗，否则显示循环图标)
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(Primary.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (currentNode != null) {
-                        // 显示国旗
-                        Text(
-                            text = currentNode.getFlagEmoji(),
-                            fontSize = 22.sp
-                        )
-                    } else {
-                        // 显示循环图标
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = null,
-                            tint = Primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                }
+                NodeIcon(
+                    node = currentNode,
+                    size = 40.dp,
+                    flagFontSize = 22.sp
+                )
                 
                 Spacer(modifier = Modifier.width(12.dp))
                 

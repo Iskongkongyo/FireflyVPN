@@ -6,21 +6,26 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.NodeTypeConverter
+import xyz.a202132.app.data.model.SubscriptionGroup
+import xyz.a202132.app.data.model.SubscriptionLink
 import xyz.a202132.app.util.DatabasePassphraseManager
 import java.io.File
 import java.io.RandomAccessFile
 
 @Database(
-    entities = [Node::class],
-    version = 3,
+    entities = [Node::class, SubscriptionGroup::class, SubscriptionLink::class],
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(NodeTypeConverter::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun nodeDao(): NodeDao
+    abstract fun subscriptionDao(): SubscriptionDao
     
     companion object {
         private const val TAG = "AppDatabase"
@@ -63,8 +68,50 @@ abstract class AppDatabase : RoomDatabase() {
                 DB_NAME
             )
                 .openHelperFactory(factory)
+                .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
                 .fallbackToDestructiveMigration()
                 .build()
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE nodes ADD COLUMN subscriptionGroupId TEXT")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS subscription_groups (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        autoUpdateEnabled INTEGER NOT NULL,
+                        updateIntervalMinutes INTEGER NOT NULL,
+                        deduplicateEnabled INTEGER NOT NULL,
+                        lastUpdatedAt INTEGER NOT NULL,
+                        lastError TEXT,
+                        lastNodeCount INTEGER NOT NULL,
+                        sortOrder INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS subscription_links (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        groupId TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        sortOrder INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_subscription_links_groupId ON subscription_links(groupId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_subscription_links_groupId_url ON subscription_links(groupId, url)")
+                db.execSQL("UPDATE nodes SET subscriptionGroupId = 'subscription_default' WHERE source = 'SUBSCRIPTION'")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE subscription_groups ADD COLUMN userAgent TEXT NOT NULL DEFAULT ''")
+            }
         }
 
         private fun ensureSqlCipherLoaded() {

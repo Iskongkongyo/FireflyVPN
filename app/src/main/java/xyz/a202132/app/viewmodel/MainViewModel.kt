@@ -7,11 +7,15 @@ import com.google.gson.Gson
 import io.nekohasekai.libbox.Libbox
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -19,11 +23,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
-import okio.BufferedSink
 import xyz.a202132.app.AppConfig
 import xyz.a202132.app.BuildConfig
 import xyz.a202132.app.UnlockPrioritySite
@@ -32,16 +33,20 @@ import xyz.a202132.app.data.model.*
 import xyz.a202132.app.data.repository.SettingsRepository
 import xyz.a202132.app.network.LatencyTester
 import xyz.a202132.app.network.NetworkClient
+import xyz.a202132.app.network.SpeedTestService
 import xyz.a202132.app.network.SubscriptionParser
 import xyz.a202132.app.network.DownloadManager
+import xyz.a202132.app.network.FireflyAccessBanEvents
 import xyz.a202132.app.network.UnlockTestManager
+import xyz.a202132.app.network.isFireflyAccessBanned
 import xyz.a202132.app.service.BoxVpnService
 import xyz.a202132.app.service.ServiceManager
 import xyz.a202132.app.util.NetworkUtils
+import xyz.a202132.app.util.Hysteria2BandwidthAdvisor
 import xyz.a202132.app.util.RuntimeLog
 import xyz.a202132.app.util.SingBoxConfigGenerator
 import xyz.a202132.app.util.UnlockTestsRunner
-import xyz.a202132.app.util.CryptoUtils
+import xyz.a202132.app.util.LegacyRawLinkMigrationCrypto
 import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -63,33 +68,21 @@ enum class NodeImportResult {
     INVALID
 }
 
-data class ScheduledNodeUpdateSettings(
-    val enabled: Boolean = false,
-    val hours: Int = 0,
-    val minutes: Int = 30,
-    val nodeAutoReconnect: Boolean = false,
-    val toastEnabled: Boolean = true,
-    val scheduledOverriddenByNotice: Boolean = false,
-    val reconnectOverriddenByNotice: Boolean = false,
-    val toastOverriddenByNotice: Boolean = false
-) {
-    val intervalMillis: Long
-        get() = ((hours * 60L) + minutes).coerceAtLeast(1L) * 60_000L
-
-    val intervalLabel: String
-        get() = buildList {
-            if (hours > 0) add("${hours}小时")
-            if (minutes > 0) add("${minutes}分钟")
-        }.ifEmpty { listOf("1分钟") }.joinToString("")
-}
+data class Hysteria2BandwidthAdaptationState(
+    val isRunning: Boolean = false,
+    val uploadMbps: Int? = null,
+    val downloadMbps: Int? = null,
+    val resultGeneration: Long = 0L
+)
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val tag = "MainViewModel"
     private val database = AppDatabase.getInstance(application)
     private val nodeDao = database.nodeDao()
+    private val subscriptionDao = database.subscriptionDao()
     private val settingsRepository = SettingsRepository(application)
-    private val subscriptionParser = SubscriptionParser()
+    private val subscriptionParser = SubscriptionParser(application)
     private val configGenerator = SingBoxConfigGenerator()
     private val latencyTester = LatencyTester()
     private val gson = Gson()
@@ -101,13 +94,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     // 节流控制
     private val THROTTLE_INTERVAL = 5000L // 5秒节流间隔
+    private val CLIENT_CATALOG_CACHE_MS = 5000L
     private var lastFetchNodesTime = 0L
-    private var lastBackupSwitchTime = 0L
     private var lastCheckUpdateTime = 0L
+    private val startupAutoUpdatedSubscriptionGroupIds = mutableSetOf<String>()
     // 缓存最新拉取的节点，供launchStartupDefaultTestIfNeeded使用（避免 Room Flow 延迟导致测旧节点）
     private var lastFetchedNodes: List<Node>? = null
-    private val lastNodeFetchFinishedAt = MutableStateFlow(0L)
-    private var lastSuccessfulNodeFetchUsedBackup: Boolean? = null
     
     // UI状态
     private val _isLoading = MutableStateFlow(false)
@@ -133,6 +125,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
     val updateInfo = _updateInfo.asStateFlow()
+    private val _remoteAppSettings = MutableStateFlow(RemoteAppSettings())
+    val remoteAppSettings = _remoteAppSettings.asStateFlow()
+    private val _updateCheckAvailable = MutableStateFlow(false)
+    val updateCheckAvailable = _updateCheckAvailable.asStateFlow()
+    private var cachedClientCatalog: ClientCatalogInfo? = null
+    private var cachedClientCatalogAt = 0L
     private val _startupUpdateCheckCompleted =
         MutableStateFlow(AppConfig.STARTUP_SPLASH_DURATION_SECONDS <= 0)
     val startupUpdateCheckCompleted = _startupUpdateCheckCompleted.asStateFlow()
@@ -140,8 +138,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _error = MutableStateFlow<String?>(null)
 
     val error = _error.asStateFlow()
+    private val newBuiltInGroupMessageChannel = Channel<String>(Channel.BUFFERED)
+    val newBuiltInGroupMessages = newBuiltInGroupMessageChannel.receiveAsFlow()
     private val _infoDialogMessage = MutableStateFlow<String?>(null)
     val infoDialogMessage = _infoDialogMessage.asStateFlow()
+    private val _fireflyAccessBanDialogVisible = MutableStateFlow(false)
+    val fireflyAccessBanDialogVisible = _fireflyAccessBanDialogVisible.asStateFlow()
     private val _showStartupDefaultTestChoiceDialog = MutableStateFlow(false)
     val showStartupDefaultTestChoiceDialog = _showStartupDefaultTestChoiceDialog.asStateFlow()
 
@@ -158,13 +160,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val autoTestProgress = _autoTestProgress.asStateFlow()
     private val _autoTestResultSnapshot = MutableStateFlow<List<Node>>(emptyList())
     val autoTestResultSnapshot = _autoTestResultSnapshot.asStateFlow()
+    private val _autoTestResultMode = MutableStateFlow<TestPreferMode?>(null)
+    val autoTestResultMode = _autoTestResultMode.asStateFlow()
+    private val _autoTestResultPriority = MutableStateFlow(BestNodePriority.LATENCY)
+    val autoTestResultPriority = _autoTestResultPriority.asStateFlow()
     private var autoTestJob: Job? = null
     
-    val nodeListCategory = settingsRepository.nodeListCategory.stateIn(
+    val selectedNodeGroupId = settingsRepository.selectedNodeGroupId.stateIn(
         viewModelScope,
-        SharingStarted.Lazily,
-        NodeListCategory.PRIMARY
+        SharingStarted.Eagerly,
+        DEFAULT_SUBSCRIPTION_GROUP_ID
     )
+
+    val subscriptionGroups = subscriptionDao.getGroups().stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        emptyList()
+    )
+
+    val nodeGroups = combine(
+        subscriptionGroups,
+        settingsRepository.favoritesGroupSortOrder,
+        settingsRepository.unreadBuiltInGroupIds
+    ) { groups, favoritesSortOrder, unreadBuiltInGroupIds ->
+        (groups.map { group ->
+            NodeGroup(
+                id = group.id,
+                name = group.name,
+                sortOrder = group.sortOrder,
+                isBuiltIn = isBuiltInSubscriptionGroup(group.id),
+                hasUnreadNodes = group.id in unreadBuiltInGroupIds
+            )
+        } + NodeGroup(
+            id = FAVORITES_NODE_GROUP_ID,
+            name = "收藏节点",
+            sortOrder = favoritesSortOrder,
+            isFavorites = true
+        )).sortedWith(compareBy<NodeGroup> { it.sortOrder }.thenBy { it.name })
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val favoriteNodeCount = nodeDao.getFavoriteNodes()
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    val subscriptionGroupSummaries = combine(
+        subscriptionGroups,
+        subscriptionDao.getAllLinks()
+    ) { groups, links ->
+        groups.map { group ->
+            SubscriptionGroupSummary(group, links.filter { it.groupId == group.id })
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val favoriteSourceNodeIds = nodeDao.getFavoriteSourceNodeIds()
         .map { it.filterNotNull().toSet() }
@@ -174,27 +220,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             emptySet()
         )
 
-    private val subscriptionNodes = combine(
-        nodeDao.getSubscriptionNodes(),
+    val allNodeListNodes = combine(
+        nodeDao.getAllNodes(),
         _filterUnavailable
     ) { list, filterOut ->
         sortNodesForList(list, filterOut)
-    }
-
-    private val favoriteNodes = combine(
-        nodeDao.getFavoriteNodes(),
-        _filterUnavailable
-    ) { list, filterOut ->
-        sortNodesForList(list, filterOut)
-    }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Data
     val nodes = combine(
-        subscriptionNodes,
-        favoriteNodes,
-        nodeListCategory
-    ) { subscription, favorites, category ->
-        if (category == NodeListCategory.FAVORITES) favorites else subscription
+        allNodeListNodes,
+        selectedNodeGroupId
+    ) { allNodes, groupId ->
+        if (groupId == FAVORITES_NODE_GROUP_ID) {
+            allNodes.filter { it.source == NodeSource.FAVORITE }
+        } else {
+            allNodes.filter {
+                it.source == NodeSource.SUBSCRIPTION && it.subscriptionGroupId == groupId
+            }
+        }
     }.stateIn(
         viewModelScope,
         SharingStarted.Lazily,
@@ -233,6 +277,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         SharingStarted.Lazily,
         IPv6RoutingMode.DISABLED
     )
+
+    val tunStackMode = settingsRepository.tunStackMode.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        TunStackMode.GVISOR
+    )
     
     val isUserAgreementAccepted = settingsRepository.isUserAgreementAccepted.stateIn(
         viewModelScope,
@@ -263,47 +313,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val startupDefaultTestMode = settingsRepository.startupDefaultTestMode.stateIn(viewModelScope, SharingStarted.Lazily, StartupDefaultTestMode.NONE)
     val rememberLastSelectedNodeEnabled = settingsRepository.rememberLastSelectedNodeEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
     val nodeIpInfoTestOnVpnStart = settingsRepository.nodeIpInfoTestOnVpnStart.stateIn(viewModelScope, SharingStarted.Lazily, false)
-    val scheduledNodeUpdateEnabled = settingsRepository.scheduledNodeUpdateEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
-    val scheduledNodeUpdateHours = settingsRepository.scheduledNodeUpdateHours.stateIn(viewModelScope, SharingStarted.Lazily, 0)
-    val scheduledNodeUpdateMinutes = settingsRepository.scheduledNodeUpdateMinutes.stateIn(viewModelScope, SharingStarted.Lazily, 30)
-    val nodeAutoReconnect = settingsRepository.nodeAutoReconnect.stateIn(viewModelScope, SharingStarted.Lazily, false)
-    val scheduledNodeUpdateToastEnabled = settingsRepository.scheduledNodeUpdateToastEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    private val localScheduledNodeUpdateSettings = combine(
-        scheduledNodeUpdateEnabled,
-        scheduledNodeUpdateHours,
-        scheduledNodeUpdateMinutes,
-        nodeAutoReconnect,
-        scheduledNodeUpdateToastEnabled
-    ) { enabled, hours, minutes, reconnect, toast ->
-        ScheduledNodeUpdateSettings(
-            enabled = enabled,
-            hours = hours.coerceIn(0, 168),
-            minutes = minutes.coerceIn(0, 59),
-            nodeAutoReconnect = reconnect,
-            toastEnabled = toast
-        )
-    }
-    val effectiveScheduledNodeUpdateSettings = combine(
-        localScheduledNodeUpdateSettings,
-        noticeConfig
-    ) { local, notice ->
-        val remoteSchedule = notice?.scheduledNodeUpdate
-        val enabled = remoteSchedule?.enabled ?: local.enabled
-        val hours = (remoteSchedule?.hours ?: local.hours).coerceIn(0, 168)
-        val minutes = (remoteSchedule?.minutes ?: local.minutes).coerceIn(0, 59)
-        val normalizedMinutes = if (enabled && hours == 0 && minutes == 0) 1 else minutes
-        val remoteReconnect = remoteSchedule?.nodeAutoReconnect ?: notice?.nodeAutoReconnect
-        ScheduledNodeUpdateSettings(
-            enabled = enabled,
-            hours = hours,
-            minutes = normalizedMinutes,
-            nodeAutoReconnect = remoteReconnect ?: local.nodeAutoReconnect,
-            toastEnabled = remoteSchedule?.toastEnabled ?: local.toastEnabled,
-            scheduledOverriddenByNotice = remoteSchedule != null,
-            reconnectOverriddenByNotice = remoteSchedule?.nodeAutoReconnect != null || notice?.nodeAutoReconnect != null,
-            toastOverriddenByNotice = remoteSchedule?.toastEnabled != null
-        )
-    }.stateIn(viewModelScope, SharingStarted.Lazily, ScheduledNodeUpdateSettings())
+    val vpnConnectivityRecoveryEnabled = settingsRepository.vpnConnectivityRecoveryEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        AppConfig.VPN_CONNECTIVITY_RECOVERY_DEFAULT_ENABLED
+    )
+    val hysteria2UploadMbps = settingsRepository.hysteria2UploadMbps.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+    )
+    val hysteria2DownloadMbps = settingsRepository.hysteria2DownloadMbps.stateIn(
+        viewModelScope,
+        SharingStarted.Lazily,
+        AppConfig.HYSTERIA2_DEFAULT_BANDWIDTH_MBPS
+    )
+    private val _hysteria2BandwidthAdaptationState = MutableStateFlow(Hysteria2BandwidthAdaptationState())
+    val hysteria2BandwidthAdaptationState = _hysteria2BandwidthAdaptationState.asStateFlow()
     val tcpingTestTimeoutMs = settingsRepository.tcpingTestTimeoutMs.stateIn(viewModelScope, SharingStarted.Lazily, AppConfig.TCPING_TEST_TIMEOUT)
     val urlTestTimeoutMs = settingsRepository.urlTestTimeoutMs.stateIn(viewModelScope, SharingStarted.Lazily, AppConfig.URL_TEST_TIMEOUT)
     val nodeIpInfoTimeoutMs = settingsRepository.nodeIpInfoTimeoutMs.stateIn(viewModelScope, SharingStarted.Lazily, AppConfig.NODE_IP_INFO_TIMEOUT_MS)
@@ -333,15 +359,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(viewModelScope, SharingStarted.Lazily, null)
     
     init {
-        // 将历史明文 rawLink 迁移为加密存储（一次性后台处理）
+        viewModelScope.launch {
+            FireflyAccessBanEvents.events.collect { event ->
+                handleFireflyAccessBan(event.errorCode)
+            }
+        }
+        viewModelScope.launch {
+            ensureDefaultSubscriptionGroup()
+        }
+        // 将旧静态密钥字段迁移回已由 SQLCipher 整库保护的数据（一次性后台处理）
         viewModelScope.launch(Dispatchers.IO) {
-            migrateRawLinksToEncrypted()
-            logRawLinkEncryptionStats("startup_migration")
+            migrateLegacyRawLinksToSqlCipher()
         }
 
         // 启动时加载数据
         viewModelScope.launch {
             // 每次启动重置选择状态 (不记住上次选择)
+            ensureDefaultSubscriptionGroup()
             settingsRepository.setSelectedNodeId(null)
             
             // 标记初始化完成，此时 selectedNodeId 才开始发出真实值
@@ -351,6 +385,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 监听用户协议状态，只有同意后才初始化网络请求
             isUserAgreementAccepted.collect { accepted ->
                 if (accepted) {
+                    // 远程入口、公告和更新不依赖节点刷新是否成功。
+                    checkNotice()
+                    checkUpdate(isAuto = true, trackStartupSplash = true)
+                    val selectedGroupAtStartup = settingsRepository.selectedNodeGroupId.first()
+                    val restoreBuiltInSelection = selectedGroupAtStartup == FAVORITES_NODE_GROUP_ID &&
+                        subscriptionDao.getGroupsOnce().none { isBuiltInSubscriptionGroup(it.id) }
+                    subscriptionDao.getGroup(selectedGroupAtStartup)
+                        ?.takeIf {
+                            it.autoUpdateEnabled &&
+                                SubscriptionAutoUpdatePolicy.isStartupOnce(it.updateIntervalMinutes)
+                        }
+                        ?.let { startupAutoUpdatedSubscriptionGroupIds.add(it.id) }
+                    // 启动时始终检查内置服务。封禁清理后可能只剩“收藏”分组，若在此
+                    // 跳过请求，客户端将无法感知解禁，也无法重新取得内置节点。
+                    val builtInFetchOk = fetchNodesInternal(
+                        bypassThrottle = true,
+                        runUrlTest = false,
+                        fetchingLabel = "同步内置节点分组",
+                        showToast = false,
+                        groupId = DEFAULT_SUBSCRIPTION_GROUP_ID,
+                        notifyPartialBuiltInFailures = true
+                    )
+                    if (builtInFetchOk && restoreBuiltInSelection) {
+                        subscriptionDao.getGroupsOnce()
+                            .firstOrNull { isBuiltInSubscriptionGroup(it.id) }
+                            ?.let { settingsRepository.setSelectedNodeGroupId(it.id) }
+                    }
                     val autoEnabled = settingsRepository.autoTestEnabled.first()
                     if (autoEnabled) {
                         val selectedModeId = settingsRepository.preferTestSelectedModeId.first()
@@ -361,11 +422,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _error.value = "APP启动后已自动执行${modeName}测试"
                         startAutomatedTest()
                     } else {
-                        val fetchOk = fetchNodesInternal(
-                            bypassThrottle = true,
-                            runUrlTest = false,
-                            fetchingLabel = "请求节点中"
-                        )
+                        val selectedGroup = settingsRepository.selectedNodeGroupId.first()
+                        val fetchOk = if (isBuiltInSubscriptionGroup(selectedGroup)) {
+                            builtInFetchOk
+                        } else if (selectedGroup == FAVORITES_NODE_GROUP_ID) {
+                            true
+                        } else {
+                            fetchNodesInternal(
+                                bypassThrottle = true,
+                                runUrlTest = false,
+                                fetchingLabel = "请求节点中",
+                                groupId = selectedGroup
+                            )
+                        }
                         if (!fetchOk) return@collect
                         restoreRememberedLastSelectedNodeIfNeeded(lastFetchedNodes)
                         val choiceDone = settingsRepository.startupDefaultTestChoiceDone.first()
@@ -375,8 +444,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             launchStartupDefaultTestIfNeeded(showHint = false)
                         }
                     }
-                    checkNotice()
-                    checkUpdate(isAuto = true, trackStartupSplash = true)
                 }
             }
         }
@@ -424,150 +491,106 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        observeScheduledNodeUpdates()
+        observeSubscriptionGroupAutoUpdates()
     }
 
-    private fun observeScheduledNodeUpdates() {
+    private suspend fun ensureDefaultSubscriptionGroup() {
+        // 内置接口不写入可编辑订阅表，避免在管理界面或数据库记录中暴露。
+        subscriptionDao.deleteLinksForGroup(DEFAULT_SUBSCRIPTION_GROUP_ID)
+    }
+
+    private fun observeSubscriptionGroupAutoUpdates() {
         viewModelScope.launch {
-            effectiveScheduledNodeUpdateSettings
-                .collectLatest { settings ->
-                    if (!settings.enabled) return@collectLatest
+            combine(subscriptionGroups, isUserAgreementAccepted) { groups, accepted ->
+                if (accepted) groups else emptyList()
+            }.collectLatest { groups ->
+                if (groups.none { it.autoUpdateEnabled }) return@collectLatest
 
-                    while (true) {
-                        val anchor = lastNodeFetchFinishedAt.value.takeIf { it > 0L }
-                            ?: lastNodeFetchFinishedAt.first { it > 0L }
-                        val delayMs = (anchor + settings.intervalMillis - System.currentTimeMillis())
-                            .coerceAtLeast(0L)
-                        delay(delayMs)
+                // 等数据库、启动请求和页面状态稳定后，再处理“启动后仅更新一次”的分组。
+                delay(SubscriptionAutoUpdatePolicy.STARTUP_STABILITY_DELAY_MS)
+                val startupOnceGroups = groups.filter { group ->
+                    group.autoUpdateEnabled &&
+                        SubscriptionAutoUpdatePolicy.isStartupOnce(group.updateIntervalMinutes) &&
+                        group.id !in startupAutoUpdatedSubscriptionGroupIds
+                }
+                startupOnceGroups.forEach { group ->
+                    if (!startupAutoUpdatedSubscriptionGroupIds.add(group.id)) return@forEach
+                    fetchNodesInternal(
+                        bypassThrottle = true,
+                        runUrlTest = false,
+                        fetchingLabel = "启动更新 ${group.name}",
+                        showToast = false,
+                        groupId = group.id
+                    )
+                }
 
-                        val latestSettings = effectiveScheduledNodeUpdateSettings.value
-                        if (!latestSettings.enabled) continue
+                if (groups.none {
+                        it.autoUpdateEnabled &&
+                            !SubscriptionAutoUpdatePolicy.isStartupOnce(it.updateIntervalMinutes)
+                    }
+                ) return@collectLatest
 
-                        val latestAnchor = lastNodeFetchFinishedAt.value
-                        val remainingMs = latestAnchor + latestSettings.intervalMillis - System.currentTimeMillis()
-                        if (latestAnchor > anchor && remainingMs > 0L) {
-                            continue
-                        }
-
-                        runScheduledNodeUpdate(latestSettings)
+                while (true) {
+                    delay(SubscriptionAutoUpdatePolicy.PERIODIC_CHECK_INTERVAL_MS)
+                    val now = System.currentTimeMillis()
+                    groups.filter { group ->
+                        group.autoUpdateEnabled &&
+                            SubscriptionAutoUpdatePolicy.isPeriodicDue(
+                                intervalMinutes = group.updateIntervalMinutes,
+                                lastUpdatedAt = group.lastUpdatedAt,
+                                now = now
+                            )
+                    }.forEach { group ->
+                        fetchNodesInternal(
+                            bypassThrottle = true,
+                            runUrlTest = false,
+                            fetchingLabel = "自动更新 ${group.name}",
+                            showToast = false,
+                            groupId = group.id
+                        )
                     }
                 }
-        }
-    }
-
-    private suspend fun runScheduledNodeUpdate(settings: ScheduledNodeUpdateSettings) {
-        val connectedNodeBeforeUpdate = if (vpnState.value == VpnState.CONNECTED) {
-            ServiceManager.currentNode.value ?: currentNode.value
-        } else {
-            null
-        }
-        val fetchOk = fetchNodesInternal(
-            skipBackupMode = lastSuccessfulNodeFetchUsedBackup == false,
-            bypassThrottle = true,
-            runUrlTest = false,
-            fetchingLabel = "定时更新节点中",
-            allowBackupFallback = false,
-            showToast = settings.toastEnabled
-        )
-        if (!fetchOk) {
-            lastNodeFetchFinishedAt.value = System.currentTimeMillis()
-            return
-        }
-
-        val freshNodes = lastFetchedNodes ?: nodes.value
-        if (
-            settings.nodeAutoReconnect &&
-            connectedNodeBeforeUpdate != null &&
-            vpnState.value == VpnState.CONNECTED
-        ) {
-            val matchedNode = freshNodes.firstOrNull { hasSameEndpoint(it, connectedNodeBeforeUpdate) }
-            if (matchedNode != null) {
-                settingsRepository.setSelectedNodeId(matchedNode.id)
-                ServiceManager.startVpn(getApplication(), matchedNode, proxyMode.value)
-                showScheduledNodeUpdateToast(settings, "节点已定时更新并自动重连: ${matchedNode.name}")
-            } else {
-                showScheduledNodeUpdateToast(settings, "节点已定时更新，当前连接节点已不存在，保持原连接")
             }
-        } else {
-            showScheduledNodeUpdateToast(settings, "节点已定时更新")
         }
     }
 
-    private fun showScheduledNodeUpdateToast(settings: ScheduledNodeUpdateSettings, message: String) {
-        if (settings.toastEnabled) {
-            _error.value = message
-        }
-    }
-
-    private fun hasSameEndpoint(first: Node, second: Node): Boolean {
-        return first.server == second.server && first.port == second.port
-    }
-
-    
     /**
      * 获取节点列表
-     */
-    val backupNodeEnabled = settingsRepository.backupNodeEnabled.stateIn(
-        viewModelScope,
-        SharingStarted.Lazily,
-        false
-    )
-    
-    /**
-     * 获取节点列表
-     */
-    // 备用节点 URL (本地存储)
-    val backupNodeUrl = settingsRepository.backupNodeUrl.stateIn(
-        viewModelScope,
-        SharingStarted.Lazily,
-        null
-    )
-    
-    /**
-     * 获取节点列表
-     */
-    /**
-     * @param skipBackupMode 强制跳过备用模式逻辑 (用于回退场景，避免 DataStore 异步更新导致重复触发)
      */
     fun fetchNodes(
-        skipBackupMode: Boolean = false,
         bypassThrottle: Boolean = false,
         runUrlTest: Boolean = true,
         allowWhenTestRunning: Boolean = false,
-        allowWhenFetchingInProgress: Boolean = false,
         fetchingLabel: String = "请求节点中"
     ) {
         viewModelScope.launch {
             fetchNodesInternal(
-                skipBackupMode = skipBackupMode,
                 bypassThrottle = bypassThrottle,
                 runUrlTest = runUrlTest,
                 allowWhenTestRunning = allowWhenTestRunning,
-                allowWhenFetchingInProgress = allowWhenFetchingInProgress,
                 fetchingLabel = fetchingLabel
             )
         }
     }
 
     private suspend fun fetchNodesInternal(
-        skipBackupMode: Boolean = false,
         bypassThrottle: Boolean = false,
         runUrlTest: Boolean = true,
         allowWhenTestRunning: Boolean = false,
-        allowWhenFetchingInProgress: Boolean = false,
         fetchingLabel: String = "请求节点中",
-        allowBackupFallback: Boolean = true,
-        showToast: Boolean = true
+        showToast: Boolean = true,
+        groupId: String? = null,
+        notifyPartialBuiltInFailures: Boolean = false
     ): Boolean {
+        val requestedGroupId = groupId ?: settingsRepository.selectedNodeGroupId.first()
+        if (requestedGroupId == FAVORITES_NODE_GROUP_ID) {
+            lastFetchedNodes = null
+            return true
+        }
         if (!allowWhenTestRunning && GlobalTestExecution.mutex.isLocked) {
             showNodeFetchToast(showToast, GlobalTestExecution.busyHint())
             return false
         }
-        if (!allowWhenFetchingInProgress && GlobalTestExecution.isFetching()) {
-            showNodeFetchToast(showToast, GlobalTestExecution.fetchingHint())
-            return false
-        }
-
         // 节流检查 (内部调用可跳过)
         if (!bypassThrottle) {
             val now = System.currentTimeMillis()
@@ -578,10 +601,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastFetchNodesTime = now
         }
 
-        GlobalTestExecution.beginFetching(fetchingLabel)
+        if (!GlobalTestExecution.tryBeginFetching(fetchingLabel)) {
+            showNodeFetchToast(showToast, GlobalTestExecution.fetchingHint())
+            return false
+        }
         _isLoading.value = true
         _filterUnavailable.value = false // 刷新时重置过滤
-        val shouldUpdateFetchAnchor = true
         try {
             // 1. 检查网络状态
             if (!NetworkUtils.isNetworkAvailable(getApplication())) {
@@ -589,92 +614,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return false
             }
 
-            // 2. 检查是否开启备用节点 (skipBackupMode 时强制为 false)
-            val isBackupEnabled = if (skipBackupMode) false else settingsRepository.backupNodeEnabled.first()
-            var targetUrl: String? = null
+            if (isBuiltInSubscriptionGroup(requestedGroupId)) {
+                return refreshBuiltInCatalogGroups(
+                    requestedGroupId = requestedGroupId,
+                    runUrlTest = runUrlTest,
+                    showToast = showToast,
+                    notifyPartialFailures = notifyPartialBuiltInFailures
+                )
+            }
+            val resolvedGroupId = requestedGroupId
+            val group = subscriptionDao.getGroup(resolvedGroupId)
+                ?: throw IllegalStateException("订阅分组不存在")
+            val links = subscriptionDao.getLinksForGroup(resolvedGroupId)
+            if (links.isEmpty()) {
+                subscriptionDao.updateRefreshResult(
+                    resolvedGroupId,
+                    group.lastUpdatedAt,
+                    "未添加订阅链接",
+                    group.lastNodeCount
+                )
+                showNodeFetchToast(showToast, "${group.name} 未添加订阅链接")
+                return false
+            }
+            val subscriptionUserAgent = group.userAgent.trim().ifBlank { AppConfig.HTTP_USER_AGENT }
 
-            if (isBackupEnabled) {
-                // 每次刷新都获取最新 Notice 配置，确保能检测到远程配置变化
-                Log.d(tag, "Backup mode enabled, fetching latest notice config...")
-                val notice = fetchNoticeSync()
-
-                if (notice == null) {
-                    // Notice 请求失败 (服务器错误等)，触发回退
-                    Log.e(tag, "Failed to fetch notice for backup node")
-                    if (allowBackupFallback) {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已退回默认节点！")
-                        handleBackupFallback()
-                    } else {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已保持原连接")
+            val results = coroutineScope {
+                links.map { link ->
+                    async(Dispatchers.IO) {
+                        var result = subscriptionParser.fetchAndParse(link.url, subscriptionUserAgent)
+                        if (result.isFailure && !result.exceptionOrNull().isFireflyAccessBanned()) {
+                            Log.w(tag, "Subscription link failed, retrying group=${group.id}", result.exceptionOrNull())
+                            result = subscriptionParser.fetchAndParse(link.url, subscriptionUserAgent)
+                        }
+                        link to result
                     }
-                    return false
+                }.awaitAll()
+            }
+            val successful = results.filter { it.second.isSuccess }
+            val failedCount = results.size - successful.size
+
+            if (successful.isNotEmpty()) {
+                val candidates = successful.flatMap { (link, result) ->
+                    result.getOrThrow().mapIndexed { index, node -> Triple(link, index, node) }
                 }
-
-                // 验证备用节点配置有效性
-                val backupUrl = notice.backupNodes?.url
-                val isValidUrl = backupUrl != null &&
-                    backupUrl.isNotBlank() &&
-                    (backupUrl.startsWith("http://") || backupUrl.startsWith("https://"))
-
-                if (isValidUrl) {
-                    targetUrl = backupUrl
-                    Log.d(tag, "Using backup node URL: $targetUrl")
+                val merged = if (group.deduplicateEnabled) {
+                    candidates.distinctBy { it.third.getRawLinkPlain().trim() }
                 } else {
-                    // 配置无效 (无 backupNodes / 无 url / url 为空 / url 格式错误)
-                    // 触发完整回退
-                    Log.w(tag, "Backup node config invalid: backupNodes=$${notice.backupNodes}, url=$backupUrl")
-                    if (allowBackupFallback) {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已退回默认节点！")
-                        handleBackupFallback()
+                    candidates
+                }
+                val fetchedNodes = merged.mapIndexed { sortOrder, (link, index, node) ->
+                    val identity = if (group.deduplicateEnabled) {
+                        node.id
                     } else {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已保持原连接")
+                        "${link.id}|$index|${node.id}"
                     }
-                    return false
-                }
-            }
-
-            // 请求节点（失败自动重试一次）
-            var result = if (targetUrl != null) {
-                subscriptionParser.fetchAndParse(targetUrl)
-            } else {
-                subscriptionParser.fetchAndParse()
-            }
-            if (result.isFailure) {
-                Log.w(tag, "First fetch attempt failed, retrying...", result.exceptionOrNull())
-                showNodeFetchToast(showToast, "请求节点失败，已自动重试...")
-                result = if (targetUrl != null) {
-                    subscriptionParser.fetchAndParse(targetUrl)
-                } else {
-                    subscriptionParser.fetchAndParse()
-                }
-            }
-
-            if (result.isSuccess) {
-                val fetchedNodes = result.getOrThrow().map {
-                    it.copy(source = NodeSource.SUBSCRIPTION, favoriteSourceNodeId = null, favoriteCreatedAt = 0L)
-                }
-                // 检查由备用节点返回的空列表
-                if (isBackupEnabled && fetchedNodes.isEmpty()) {
-                    Log.w(tag, "Backup node returned empty list, treating as failure")
-                    if (allowBackupFallback) {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已退回默认节点！")
-                        handleBackupFallback()
-                    } else {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已保持原连接")
-                    }
-                    return false
+                    node.copy(
+                        id = stableSubscriptionNodeId(group.id, identity),
+                        source = NodeSource.SUBSCRIPTION,
+                        subscriptionGroupId = group.id,
+                        favoriteSourceNodeId = null,
+                        favoriteCreatedAt = 0L,
+                        sortOrder = sortOrder
+                    )
                 }
 
-                // 保存到数据库
-                nodeDao.replaceSubscriptionNodes(fetchedNodes)
-                // 缓存最新节点，供后续自动测试使用（避免 Room Flow 延迟导致测旧节点）
-                lastFetchedNodes = fetchedNodes
-                lastSuccessfulNodeFetchUsedBackup = targetUrl != null
-
-                if (BuildConfig.DEBUG) {
-                    viewModelScope.launch(Dispatchers.IO) {
-                        logRawLinkEncryptionStats("after_fetch_insert")
-                    }
+                nodeDao.replaceSubscriptionNodes(group.id, fetchedNodes)
+                subscriptionDao.updateRefreshResult(
+                    group.id,
+                    System.currentTimeMillis(),
+                    failedCount.takeIf { it > 0 }?.let { "$it/${results.size} 个链接更新失败" },
+                    fetchedNodes.size
+                )
+                // 仅缓存当前页签的结果，避免后台更新其他分组干扰后续测试。
+                if (settingsRepository.selectedNodeGroupId.first() == group.id) {
+                    lastFetchedNodes = fetchedNodes
                 }
 
                 // 自动测试延迟 (直接传入节点列表，避免等待 Flow 更新)
@@ -683,22 +696,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     urlTestAllNodes(fetchedNodes)
                 }
 
-                Log.d(tag, "Fetched ${fetchedNodes.size} nodes")
+                if (showToast && failedCount > 0) {
+                    showNodeFetchToast(true, "${group.name} 已更新，$failedCount 个链接失败")
+                }
+                Log.d(tag, "Fetched ${fetchedNodes.size} nodes for group=${group.id}")
                 return true
             } else {
-                val e = result.exceptionOrNull()
+                val e = results.firstNotNullOfOrNull { it.second.exceptionOrNull() }
                 Log.e(tag, "Failed to fetch nodes", e)
-                if (isBackupEnabled) {
-                    if (allowBackupFallback) {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已退回默认节点！")
-                        // 执行回退操作 (关闭，清除URL，重试默认)
-                        handleBackupFallback()
-                    } else {
-                        showNodeFetchToast(showToast, "备用节点当前不可用，已保持原连接")
-                    }
-                } else {
-                    showNodeFetchToast(showToast, "获取节点失败: ${e?.message ?: "未知错误"}")
-                }
+                val message = e?.message ?: "未知错误"
+                subscriptionDao.updateRefreshResult(
+                    group.id,
+                    group.lastUpdatedAt,
+                    message,
+                    group.lastNodeCount
+                )
+                showNodeFetchToast(showToast, "${group.name} 更新失败: $message")
                 return false
             }
         } catch (e: Exception) {
@@ -708,9 +721,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             _isLoading.value = false
             GlobalTestExecution.endFetching()
-            if (shouldUpdateFetchAnchor) {
-                lastNodeFetchFinishedAt.value = System.currentTimeMillis()
-            }
         }
     }
 
@@ -719,117 +729,159 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _error.value = message
         }
     }
-    
-    // 处理备用节点回退逻辑
-    private suspend fun handleBackupFallback() {
-        // 0. 如果 VPN 正在运行，先停止（因为节点来源已失效）
-        if (vpnState.value != VpnState.DISCONNECTED) {
-            Log.d(tag, "Stopping VPN before backup fallback")
-            ServiceManager.stopVpn(getApplication())
-            delay(500) // 等待 VPN 停止
-        }
-        
-        // 1. 关闭备用节点开关
-        settingsRepository.setBackupNodeEnabled(false)
-        // 2. 清除备用节点 URL
-        settingsRepository.setBackupNodeUrl(null)
-        // 3. 清除当前选中的节点（备用节点 ID 在默认列表中不存在）
-        settingsRepository.setSelectedNodeId(null)
-        
-        // 4. 更新 Notice Config 以隐藏按钮
-        val currentConfig = _noticeConfig.value
-        if (currentConfig != null) {
-            _noticeConfig.value = currentConfig.copy(backupNodes = null)
-        }
-        
-        // 5. 重新请求，强制跳过备用模式 (避免 DataStore 异步更新导致重复触发)
-        val fetchOk = fetchNodesInternal(
-            skipBackupMode = true,
-            bypassThrottle = true,
-            runUrlTest = false,
-            allowWhenFetchingInProgress = true,
-            fetchingLabel = "请求节点中"
-        )
-        if (!fetchOk) return
-        launchStartupDefaultTestIfNeeded(showHint = true)
-    }
-    
-    // 辅助: 同步获取 Notice
-    private suspend fun fetchNoticeSync(): NoticeInfo? {
-        return try {
-            val info = withTimeout(AppConfig.NOTICE_REQUEST_TIMEOUT_MS) {
-                NetworkClient.apiService.getNoticeInfo(AppConfig.NOTICE_URL)
-            }
-            updateNoticeConfig(info)
-            info
-        } catch (e: Exception) {
-            null
-        }
-    }
-    
-    private suspend fun updateNoticeConfig(info: NoticeInfo) {
-        _noticeConfig.value = info
-        
-        val backupInfo = info.backupNodes
-        val isValid = backupInfo?.url?.let { 
-             it.startsWith("http://") || it.startsWith("https://") 
-        } == true
-        
-        if (isValid) {
-            settingsRepository.setBackupNodeUrl(backupInfo!!.url)
-        } else {
-            // 无效配置，清除本地记录
-            settingsRepository.setBackupNodeUrl(null)
-            // 注意: 不在这里触发 handleBackupFallback，让 fetchNodes 的调用者统一处理
-            // 避免重复触发 Toast
-        }
-    }
-    
-    fun setBackupNodeEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            if (GlobalTestExecution.isFetching()) {
-                _error.value = GlobalTestExecution.fetchingHint()
-                return@launch
-            }
-            if (_autoTestProgress.value.running || _isTesting.value || GlobalTestExecution.mutex.isLocked) {
-                _error.value = GlobalTestExecution.busyHint()
-                return@launch
-            }
 
-            // 节流检查
-            val now = System.currentTimeMillis()
-            if (now - lastBackupSwitchTime < THROTTLE_INTERVAL) {
-                _error.value = "切换过于频繁，请稍后再试"
-                return@launch
-            }
-            lastBackupSwitchTime = now
-            
-            // 如果 VPN 正在运行，先停止（因为节点来源将改变）
-            if (vpnState.value != VpnState.DISCONNECTED) {
-                Log.d(tag, "Stopping VPN before switching node source")
-                ServiceManager.stopVpn(getApplication())
-                // 等待 VPN 停止
-                delay(500)
-            }
-            
-            // 清除当前选中的节点（因为它可能不在新列表中）
-            settingsRepository.setSelectedNodeId(null)
-            
-            // 切换设置
-            settingsRepository.setBackupNodeEnabled(enabled)
-            delay(100)
-            
-            // 获取新的节点列表 (跳过节流检查，因为这是内部调用；测试行为跟随 APP 默认设置)
-            val fetchOk = fetchNodesInternal(
-                bypassThrottle = true,
-                runUrlTest = false,
-                fetchingLabel = "请求节点中"
-            )
-            if (!fetchOk) return@launch
-            launchStartupDefaultTestIfNeeded(showHint = true)
+    private suspend fun refreshBuiltInCatalogGroups(
+        requestedGroupId: String,
+        runUrlTest: Boolean,
+        showToast: Boolean,
+        notifyPartialFailures: Boolean
+    ): Boolean {
+        var catalogResult = subscriptionParser.fetchAndParseFireflyCatalog()
+        if (catalogResult.isFailure && !catalogResult.exceptionOrNull().isFireflyAccessBanned()) {
+            Log.w(tag, "Firefly catalog failed, retrying", catalogResult.exceptionOrNull())
+            catalogResult = subscriptionParser.fetchAndParseFireflyCatalog()
         }
+        val entries = catalogResult.getOrElse { error ->
+            val message = error.message ?: "未知错误"
+            showNodeFetchToast(showToast, "内置节点分组更新失败: $message")
+            return false
+        }
+
+        if (entries.isNotEmpty()) {
+            val catalogGroupIdsInOrder = entries.map { builtInSubscriptionGroupId(it.sourceId) }
+            val newlyAddedIds = settingsRepository.recordBuiltInGroupIds(catalogGroupIdsInOrder.toSet())
+            if (newlyAddedIds.isNotEmpty()) {
+                val newGroupNames = entries.mapIndexedNotNull { index, entry ->
+                    val groupId = catalogGroupIdsInOrder[index]
+                    if (groupId in newlyAddedIds) {
+                        entry.name.trim().ifBlank { "节点分组 ${index + 1}" }.take(80)
+                    } else {
+                        null
+                    }
+                }
+                newBuiltInGroupMessageChannel.send(
+                    "新增 ${newGroupNames.joinToString("、")}分组节点"
+                )
+            }
+        }
+
+        val existingGroups = subscriptionDao.getGroupsOnce()
+        val existingById = existingGroups.associateBy { it.id }
+        val legacyGroup = existingById[DEFAULT_SUBSCRIPTION_GROUP_ID]
+        val catalogGroupIds = entries.map { builtInSubscriptionGroupId(it.sourceId) }.toSet()
+        var nextSortOrder = (existingGroups.maxOfOrNull { it.sortOrder } ?: -1) + 1
+        var successfulGroups = 0
+        var failedGroups = 0
+        var totalNodes = 0
+        val refreshedNodes = mutableMapOf<String, List<Node>>()
+        val failedGroupNames = mutableListOf<String>()
+
+        entries.forEachIndexed { catalogIndex, entry ->
+            val groupId = builtInSubscriptionGroupId(entry.sourceId)
+            val groupName = entry.name.trim().ifBlank { "节点分组 ${catalogIndex + 1}" }.take(80)
+            val existing = existingById[groupId]
+            val sortOrder = existing?.sortOrder ?: if (catalogIndex == 0 && legacyGroup != null) {
+                legacyGroup.sortOrder
+            } else {
+                nextSortOrder++
+            }
+            val parsedNodes = entry.nodes?.distinctBy { it.getRawLinkPlain().trim() }
+            val errorMessage = entry.error?.message?.take(300)
+            val group = SubscriptionGroup(
+                id = groupId,
+                name = groupName,
+                autoUpdateEnabled = false,
+                updateIntervalMinutes = existing?.updateIntervalMinutes ?: 360,
+                deduplicateEnabled = true,
+                userAgent = "",
+                lastUpdatedAt = if (parsedNodes != null) System.currentTimeMillis() else existing?.lastUpdatedAt ?: 0L,
+                lastError = errorMessage,
+                lastNodeCount = parsedNodes?.size ?: existing?.lastNodeCount ?: 0,
+                sortOrder = sortOrder,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis()
+            )
+            subscriptionDao.insertGroup(group)
+
+            if (parsedNodes != null) {
+                val nodesForGroup = parsedNodes.mapIndexed { nodeIndex, node ->
+                    node.copy(
+                        id = stableSubscriptionNodeId(groupId, node.id),
+                        source = NodeSource.SUBSCRIPTION,
+                        subscriptionGroupId = groupId,
+                        favoriteSourceNodeId = null,
+                        favoriteCreatedAt = 0L,
+                        sortOrder = nodeIndex
+                    )
+                }
+                nodeDao.replaceSubscriptionNodes(groupId, nodesForGroup)
+                refreshedNodes[groupId] = nodesForGroup
+                successfulGroups++
+                totalNodes += nodesForGroup.size
+            } else {
+                failedGroups++
+                failedGroupNames += groupName
+            }
+        }
+
+        val staleBuiltInGroupIds = existingGroups
+            .filter { isBuiltInSubscriptionGroup(it.id) && it.id !in catalogGroupIds }
+            .map { it.id }
+            .toSet()
+        val selectedNodeBeforeCleanup = settingsRepository.selectedNodeId.first()
+            ?.let { nodeDao.getNodeById(it) }
+        staleBuiltInGroupIds.forEach { staleId -> subscriptionDao.deleteGroup(staleId) }
+        if (selectedNodeBeforeCleanup?.subscriptionGroupId in staleBuiltInGroupIds) {
+            settingsRepository.setSelectedNodeId(null)
+        }
+
+        val currentSelectedGroupId = settingsRepository.selectedNodeGroupId.first()
+        val selectedCatalogGroupId = when {
+            requestedGroupId in catalogGroupIds -> requestedGroupId
+            currentSelectedGroupId in catalogGroupIds -> currentSelectedGroupId
+            else -> catalogGroupIds.firstOrNull()
+        }
+        if (isBuiltInSubscriptionGroup(currentSelectedGroupId) &&
+            currentSelectedGroupId != selectedCatalogGroupId
+        ) {
+            val fallback = selectedCatalogGroupId
+                ?: subscriptionDao.getGroupsOnce().firstOrNull { !isBuiltInSubscriptionGroup(it.id) }?.id
+                ?: FAVORITES_NODE_GROUP_ID
+            settingsRepository.setSelectedNodeGroupId(fallback)
+        }
+
+        selectedCatalogGroupId?.let { selectedId ->
+            val selectedNodes = refreshedNodes[selectedId]
+                ?: nodeDao.getSubscriptionNodes(selectedId).first()
+            lastFetchedNodes = selectedNodes
+            if (runUrlTest && selectedNodes.isNotEmpty()) {
+                urlTestAllNodes(selectedNodes)
+            }
+        }
+
+        if (entries.isEmpty()) {
+            showNodeFetchToast(showToast, "后台没有可用的节点分组")
+            return false
+        }
+        if (failedGroupNames.isNotEmpty()) {
+            if (showToast || notifyPartialFailures) {
+                showNodeFetchToast(
+                    showToast = true,
+                    message = "${failedGroupNames.joinToString("、")}分组的节点数据更新失败"
+                )
+            }
+        } else if (showToast) {
+            showNodeFetchToast(true, "已同步 ${entries.size} 个节点分组、$totalNodes 个节点")
+        }
+        Log.d(tag, "Synced Firefly catalog groups=${entries.size} nodes=$totalNodes failures=$failedGroups")
+        return successfulGroups > 0
     }
-    
+
+    private fun stableSubscriptionNodeId(groupId: String, identity: String): String =
+        if (groupId == DEFAULT_SUBSCRIPTION_GROUP_ID && '|' !in identity) {
+            identity
+        } else {
+            "sub_${UUID.nameUUIDFromBytes("$groupId|$identity".toByteArray(Charsets.UTF_8))}"
+        }
     fun testAllNodes(targetNodes: List<Node>? = null) {
         viewModelScope.launch {
             if (GlobalTestExecution.isFetching()) {
@@ -871,8 +923,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         targetNodes: List<Node>? = null,
         requireGlobalLock: Boolean,
         onProgress: ((completed: Int, total: Int) -> Unit)? = null
-    ) {
-        viewModelScope.launch {
+    ): Job = viewModelScope.launch {
             var locked = false
             if (requireGlobalLock) {
                 if (GlobalTestExecution.isFetching()) {
@@ -987,31 +1038,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } finally {
-                // 读取 sing-box 核心日志
-                if (startedHeadless) {
-                    withContext(Dispatchers.IO) {
-                        val coreLog = xyz.a202132.app.network.UrlTestManager.readLogFile(getApplication())
-                        if (coreLog != null) {
-                            // 分段输出日志（logcat 单条消息有长度限制）
-                            coreLog.lines().forEach { line ->
-                                Log.d("SingBoxCoreLog", line)
+                withContext(NonCancellable) {
+                    // 读取 sing-box 核心日志
+                    if (startedHeadless) {
+                        withContext(Dispatchers.IO) {
+                            val coreLog = xyz.a202132.app.network.UrlTestManager.readLogFile(getApplication())
+                            if (coreLog != null) {
+                                // 分段输出日志（logcat 单条消息有长度限制）
+                                coreLog.lines().forEach { line ->
+                                    Log.d("SingBoxCoreLog", line)
+                                }
+                            } else {
+                                Log.w(tag, "No sing-box core log available")
                             }
-                        } else {
-                            Log.w(tag, "No sing-box core log available")
                         }
                     }
-                }
-                // 如果启动了临时实例，关闭它
-                if (startedHeadless) {
-                    xyz.a202132.app.network.UrlTestManager.stop()
-                }
-                _isTesting.value = false
-                _testingLabel.value = null
-                if (locked) {
-                    GlobalTestExecution.finish()
+                    // 如果启动了临时实例，关闭它
+                    if (startedHeadless) {
+                        xyz.a202132.app.network.UrlTestManager.stop()
+                    }
+                    _isTesting.value = false
+                    _testingLabel.value = null
+                    if (locked) {
+                        GlobalTestExecution.finish()
+                    }
                 }
             }
-        }
     }
     
     /**
@@ -1060,26 +1112,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setScheduledNodeUpdateSettings(
-        enabled: Boolean,
-        hours: Int,
-        minutes: Int,
-        nodeAutoReconnect: Boolean,
-        toastEnabled: Boolean
-    ) {
+    fun setVpnConnectivityRecoveryEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            val savedHours = hours.coerceIn(0, 168)
-            val savedMinutes = minutes.coerceIn(0, 59)
-            val normalizedMinutes = if (enabled && savedHours == 0 && savedMinutes == 0) {
-                1
-            } else {
-                savedMinutes
+            settingsRepository.setVpnConnectivityRecoveryEnabled(enabled)
+        }
+    }
+
+    fun setHysteria2Bandwidth(uploadMbps: Int, downloadMbps: Int) {
+        viewModelScope.launch {
+            settingsRepository.setHysteria2Bandwidth(uploadMbps, downloadMbps)
+        }
+    }
+
+    fun adaptHysteria2Bandwidth() {
+        if (_hysteria2BandwidthAdaptationState.value.isRunning) return
+        viewModelScope.launch {
+            if (_hysteria2BandwidthAdaptationState.value.isRunning) return@launch
+            if (GlobalTestExecution.isFetching()) {
+                _error.value = GlobalTestExecution.fetchingHint()
+                return@launch
             }
-            settingsRepository.setScheduledNodeUpdateEnabled(enabled)
-            settingsRepository.setScheduledNodeUpdateHours(savedHours)
-            settingsRepository.setScheduledNodeUpdateMinutes(normalizedMinutes)
-            settingsRepository.setNodeAutoReconnect(nodeAutoReconnect)
-            settingsRepository.setScheduledNodeUpdateToastEnabled(toastEnabled)
+            if (!GlobalTestExecution.tryStart("Hysteria2 带宽自适应")) {
+                _error.value = GlobalTestExecution.busyHint()
+                return@launch
+            }
+            _hysteria2BandwidthAdaptationState.value =
+                _hysteria2BandwidthAdaptationState.value.copy(isRunning = true)
+            try {
+                val measurement = withContext(Dispatchers.IO) {
+                    val directClient = NetworkClient.createUnderlyingNetworkClient(
+                        getApplication(),
+                        AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS
+                    ) ?: throw IOException("当前没有可用的 Wi-Fi 或移动网络")
+                    val speedTestService = SpeedTestService(
+                        downloadTimeoutMs = AppConfig.AUTO_TEST_BANDWIDTH_DOWNLOAD_TIMEOUT_MS,
+                        uploadTimeoutMs = AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS,
+                        baseClient = directClient
+                    )
+                    val download = speedTestService.startDownloadTest(
+                        AppConfig.HYSTERIA2_ADAPTIVE_TEST_BYTES
+                    ) { _, _ -> }
+                    val upload = speedTestService.startUploadTest(
+                        AppConfig.HYSTERIA2_ADAPTIVE_TEST_BYTES
+                    ) { _, _ -> }
+                    download.avgSpeedMbps to upload.avgSpeedMbps
+                }
+                val recommendedDownload = Hysteria2BandwidthAdvisor.recommend(measurement.first)
+                val recommendedUpload = Hysteria2BandwidthAdvisor.recommend(measurement.second)
+                val generation = _hysteria2BandwidthAdaptationState.value.resultGeneration + 1L
+                _hysteria2BandwidthAdaptationState.value = Hysteria2BandwidthAdaptationState(
+                    uploadMbps = recommendedUpload,
+                    downloadMbps = recommendedDownload,
+                    resultGeneration = generation
+                )
+                _error.value = buildString {
+                    append("自适应完成：实测下行 %.1f、上行 %.1f Mbps，建议 ".format(measurement.first, measurement.second))
+                    append("下行 $recommendedDownload、上行 $recommendedUpload Mbps")
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Hysteria2 bandwidth adaptation failed", e)
+                _error.value = "Hysteria2 带宽自适应失败：${e.message ?: "测速失败"}"
+            } finally {
+                _hysteria2BandwidthAdaptationState.value =
+                    _hysteria2BandwidthAdaptationState.value.copy(isRunning = false)
+                GlobalTestExecution.finish()
+            }
         }
     }
 
@@ -1239,7 +1336,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             settingsRepository.setAutoTestNodeLimit(currentNodeLimit)
             _isAutoSelecting.value = true
             startAutomatedTest(
-                preferPriority = mode.defaultPriority,
+                preferPriority = mode.activePriorityOrder().firstOrNull() ?: mode.defaultPriority,
                 connectBestAfterDone = true,
                 configOverride = mode.toAutoTestConfig(autoRunEnabled = autoTestEnabled.value)
                     .copy(nodeLimit = currentNodeLimit),
@@ -1307,7 +1404,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         modeOverride: TestPreferMode? = null
     ) {
         viewModelScope.launch {
-            val currentMode = modeOverride ?: preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
+            val currentMode = modeOverride
+                ?: _autoTestResultMode.value
+                ?: preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
             if (currentMode == null) {
                 _error.value = "当前模式不存在，请重新选择模式"
                 return@launch
@@ -1323,6 +1422,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            val reorderedPriority = listOf(priority) + currentMode.normalizePriorityOrder().priorityOrder
+                .filterNot { it == priority }
+            val resultMode = currentMode.copy(
+                defaultPriority = priority,
+                priorityOrder = reorderedPriority
+            )
+            _autoTestResultMode.value = resultMode
+            _autoTestResultPriority.value = priority
+            _autoTestResultSnapshot.value = sortNodesForSnapshot(snapshotNodes, priority, resultMode)
+
             val candidates = snapshotNodes
                 .filter { it.isAvailable }
                 .let { filterPriorityReadyCandidates(it, priority) }
@@ -1332,7 +1441,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val best = pickBestNode(candidates, priority, currentMode)
+            val best = pickBestNode(candidates, priority, resultMode)
             if (best == null) {
                 _error.value = "快照中没有可用于${priorityDisplayName(priority)}择优的节点"
                 return@launch
@@ -1346,12 +1455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isPrioritySupportedByMode(priority: BestNodePriority, mode: TestPreferMode): Boolean {
-        return when (priority) {
-            BestNodePriority.LATENCY -> mode.latencyEnabled
-            BestNodePriority.UPLOAD -> mode.bandwidthEnabled && mode.bandwidthUploadEnabled
-            BestNodePriority.DOWNLOAD -> mode.bandwidthEnabled && mode.bandwidthDownloadEnabled
-            BestNodePriority.UNLOCK_COUNT -> mode.unlockEnabled
-        }
+        return mode.supportsPriority(priority)
     }
 
     private fun filterPriorityReadyCandidates(nodes: List<Node>, priority: BestNodePriority): List<Node> {
@@ -1420,9 +1524,205 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setNodeListCategory(category: NodeListCategory) {
+    fun setSelectedNodeGroup(groupId: String) {
         viewModelScope.launch {
-            settingsRepository.setNodeListCategory(category)
+            settingsRepository.setSelectedNodeGroupId(groupId)
+        }
+    }
+
+    private val _refreshingSubscriptionGroupIds = MutableStateFlow<Set<String>>(emptySet())
+    val refreshingSubscriptionGroupIds = _refreshingSubscriptionGroupIds.asStateFlow()
+
+    fun saveSubscriptionGroup(
+        groupId: String?,
+        name: String,
+        urls: List<String>,
+        userAgent: String,
+        autoUpdateEnabled: Boolean,
+        updateIntervalMinutes: Int,
+        deduplicateEnabled: Boolean,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            if (groupId != null && isBuiltInSubscriptionGroup(groupId)) {
+                onResult(false, "内置节点分组不可修改")
+                return@launch
+            }
+            val normalizedName = name.trim()
+            val normalizedUrls = urls.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            val normalizedUserAgent = userAgent.trim().ifBlank { AppConfig.HTTP_USER_AGENT }
+            when {
+                normalizedName.isEmpty() -> {
+                    onResult(false, "请输入分组名称")
+                    return@launch
+                }
+                normalizedUrls.isEmpty() -> {
+                    onResult(false, "请至少添加一个订阅链接")
+                    return@launch
+                }
+                normalizedUrls.any { !it.startsWith("http://", true) && !it.startsWith("https://", true) } -> {
+                    onResult(false, "订阅链接仅支持 http 或 https")
+                    return@launch
+                }
+                normalizedUserAgent.length > 256 || normalizedUserAgent.any { it.code !in 32..126 } -> {
+                    onResult(false, "用户代理仅支持 256 个以内的英文可见字符")
+                    return@launch
+                }
+                autoUpdateEnabled &&
+                    updateIntervalMinutes != SubscriptionAutoUpdatePolicy.STARTUP_ONCE_INTERVAL_MINUTES &&
+                    updateIntervalMinutes !in SubscriptionAutoUpdatePolicy.MIN_PERIODIC_INTERVAL_MINUTES..
+                        SubscriptionAutoUpdatePolicy.MAX_PERIODIC_INTERVAL_MINUTES -> {
+                    onResult(
+                        false,
+                        "更新间隔有效范围为0-10080分钟！0分钟：APP 启动稳定后仅更新一次；1-10080分钟：APP 会定时更新"
+                    )
+                    return@launch
+                }
+            }
+
+            val existingGroups = subscriptionDao.getGroupsOnce()
+            if (existingGroups.any { it.id != groupId && it.name.equals(normalizedName, true) }) {
+                onResult(false, "已存在同名分组")
+                return@launch
+            }
+
+            val old = groupId?.let { subscriptionDao.getGroup(it) }
+            val id = old?.id ?: UUID.randomUUID().toString()
+            val favoritesOrder = settingsRepository.favoritesGroupSortOrder.first()
+            val newSortOrder = if (favoritesOrder == Int.MAX_VALUE) {
+                (existingGroups.maxOfOrNull { it.sortOrder } ?: -1) + 1
+            } else {
+                maxOf(existingGroups.maxOfOrNull { it.sortOrder } ?: -1, favoritesOrder) + 1
+            }
+            val group = SubscriptionGroup(
+                id = id,
+                name = normalizedName,
+                autoUpdateEnabled = autoUpdateEnabled,
+                updateIntervalMinutes = SubscriptionAutoUpdatePolicy.normalizeInterval(updateIntervalMinutes),
+                deduplicateEnabled = deduplicateEnabled,
+                userAgent = normalizedUserAgent,
+                lastUpdatedAt = old?.lastUpdatedAt ?: 0L,
+                lastError = old?.lastError,
+                lastNodeCount = old?.lastNodeCount ?: 0,
+                sortOrder = old?.sortOrder ?: newSortOrder,
+                createdAt = old?.createdAt ?: System.currentTimeMillis()
+            )
+            val links = normalizedUrls.mapIndexed { index, url ->
+                SubscriptionLink(
+                    id = UUID.randomUUID().toString(),
+                    groupId = id,
+                    url = url,
+                    sortOrder = index
+                )
+            }
+            subscriptionDao.saveGroup(group, links)
+            onResult(true, if (old == null) "订阅分组已创建" else "订阅分组已保存")
+        }
+    }
+
+    fun deleteSubscriptionGroup(groupId: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            if (isBuiltInSubscriptionGroup(groupId) || groupId == FAVORITES_NODE_GROUP_ID) {
+                onResult(false, "该分组受保护，不能删除")
+                return@launch
+            }
+            val groups = subscriptionDao.getGroupsOnce()
+            val group = groups.firstOrNull { it.id == groupId }
+            if (group == null) {
+                onResult(false, "订阅分组不存在")
+                return@launch
+            }
+            val selectedNode = settingsRepository.selectedNodeId.first()?.let { nodeDao.getNodeById(it) }
+            subscriptionDao.deleteGroup(groupId)
+            if (selectedNode?.subscriptionGroupId == groupId) {
+                settingsRepository.setSelectedNodeId(null)
+            }
+            if (settingsRepository.selectedNodeGroupId.first() == groupId) {
+                settingsRepository.setSelectedNodeGroupId(groups.first { it.id != groupId }.id)
+            }
+            onResult(true, "已删除 ${group.name}")
+        }
+    }
+
+    fun refreshSubscriptionGroup(groupId: String) {
+        if (groupId == FAVORITES_NODE_GROUP_ID) return
+        if (groupId in _refreshingSubscriptionGroupIds.value) return
+        viewModelScope.launch {
+            _refreshingSubscriptionGroupIds.value += groupId
+            try {
+                fetchNodesInternal(
+                    bypassThrottle = true,
+                    runUrlTest = false,
+                    fetchingLabel = "更新订阅中",
+                    showToast = true,
+                    groupId = groupId
+                )
+            } finally {
+                _refreshingSubscriptionGroupIds.value -= groupId
+            }
+        }
+    }
+
+    fun refreshAllSubscriptionGroups() {
+        if (_refreshingSubscriptionGroupIds.value.isNotEmpty()) return
+        viewModelScope.launch {
+            val groups = subscriptionDao.getGroupsOnce()
+            val builtInGroups = groups.filter { isBuiltInSubscriptionGroup(it.id) }
+            val customGroups = groups.filterNot { isBuiltInSubscriptionGroup(it.id) }
+            _refreshingSubscriptionGroupIds.value =
+                (groups.map { it.id } + DEFAULT_SUBSCRIPTION_GROUP_ID).toSet()
+            var succeeded = 0
+            val total = customGroups.size + 1
+            try {
+                val builtInRequestId = builtInGroups.firstOrNull()?.id ?: DEFAULT_SUBSCRIPTION_GROUP_ID
+                if (fetchNodesInternal(
+                        bypassThrottle = true,
+                        runUrlTest = false,
+                        fetchingLabel = "更新内置节点分组",
+                        showToast = false,
+                        groupId = builtInRequestId
+                    )
+                ) {
+                    succeeded++
+                }
+                customGroups.forEach { group ->
+                    if (fetchNodesInternal(
+                            bypassThrottle = true,
+                            runUrlTest = false,
+                            fetchingLabel = "更新 ${group.name}",
+                            showToast = false,
+                            groupId = group.id
+                        )
+                    ) {
+                        succeeded++
+                    }
+                }
+                _error.value = "分组更新完成：$succeeded/$total"
+            } finally {
+                _refreshingSubscriptionGroupIds.value = emptySet()
+            }
+        }
+    }
+
+    fun setNodeGroupOrder(groupIds: List<String>) {
+        viewModelScope.launch {
+            val current = nodeGroups.value
+            val validIds = current.map { it.id }.toSet()
+            val normalizedIds = groupIds.filter { it in validIds }.distinct() +
+                current.map { it.id }.filterNot { it in groupIds }
+            val ordered = normalizedIds.mapNotNull { id -> current.firstOrNull { it.id == id } }
+            val groupsById = subscriptionDao.getGroupsOnce().associateBy { it.id }
+            ordered.forEachIndexed { index, nodeGroup ->
+                if (nodeGroup.isFavorites) {
+                    settingsRepository.setFavoritesGroupSortOrder(index)
+                } else {
+                    groupsById[nodeGroup.id]?.let { group ->
+                        if (group.sortOrder != index) {
+                            subscriptionDao.updateGroup(group.copy(sortOrder = index))
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1454,6 +1754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 node.copy(
                     id = "fav_${UUID.randomUUID()}",
                     source = NodeSource.FAVORITE,
+                    subscriptionGroupId = null,
                     favoriteSourceNodeId = node.id,
                     favoriteCreatedAt = now
                 )
@@ -1506,7 +1807,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val importedCount = importResult.second
 
             if (result == NodeImportResult.IMPORTED) {
-                settingsRepository.setNodeListCategory(NodeListCategory.FAVORITES)
+                settingsRepository.setSelectedNodeGroupId(FAVORITES_NODE_GROUP_ID)
                 RuntimeLog.info(tag, "Imported $importedCount nodes to favorites")
             } else {
                 RuntimeLog.warn(tag, "Node import finished without new nodes: result=$result")
@@ -1559,14 +1860,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 切换VPN连接
      */
     fun toggleVpn() {
-        val node = currentNode.value ?: run {
-            RuntimeLog.warn(tag, "VPN toggle ignored: no selected node")
-            _error.value = "请先选择节点"
-            return
-        }
-        
         when (vpnState.value) {
             VpnState.DISCONNECTED -> {
+                val node = currentNode.value ?: run {
+                    RuntimeLog.warn(tag, "VPN start ignored: no selected node")
+                    _error.value = "请先选择节点"
+                    return
+                }
                 // 4. 无网络连接节点时给用户发Toast，但不阻止
                 if (!NetworkUtils.isNetworkAvailable(getApplication())) {
                     RuntimeLog.warn(tag, "VPN start requested while network is unavailable")
@@ -1620,6 +1920,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setTunStackMode(mode: TunStackMode) {
+        viewModelScope.launch {
+            settingsRepository.setTunStackMode(mode)
+            // TUN 栈在核心启动时创建，运行中修改需要重启 VPN。
+            restartVpnIfNeeded()
+        }
+    }
+
     /**
      * 检查通知公告
      */
@@ -1643,15 +1951,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun checkNotice() {
-        val result = requestWithAutoRetry("公告通知") {
-            withTimeout(AppConfig.NOTICE_REQUEST_TIMEOUT_MS) {
-                NetworkClient.apiService.getNoticeInfo(AppConfig.NOTICE_URL)
-            }
-        }
-        result.onSuccess { noticeInfo ->
+        val result = fetchClientCatalog(useRecentCache = false)
+        result.onSuccess { catalog ->
+            val noticeInfo = catalog.notice
             _noticeConfig.value = noticeInfo
 
-            if (noticeInfo.hasNotice) {
+            if (noticeInfo?.hasNotice == true) {
                 // 如果 showOnce 为 true，检查是否已显示过
                 // 如果 showOnce 为 false，则每次都显示
                 if (!noticeInfo.showOnce) {
@@ -1682,12 +1987,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (trackStartupSplash) {
                 _startupUpdateCheckCompleted.value = false
             }
-            if (AppConfig.UPDATE_URL.isBlank()) {
-                if (trackStartupSplash) {
-                    _startupUpdateCheckCompleted.value = true
-                }
-                return@launch
-            }
             // 节流检查 (自动检查可跳过)
             if (!isAuto) {
                 val now = System.currentTimeMillis()
@@ -1698,12 +1997,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 lastCheckUpdateTime = now
             }
             
-            val result = requestWithAutoRetry("版本更新") {
-                withTimeout(AppConfig.UPDATE_REQUEST_TIMEOUT_MS) {
-                    NetworkClient.apiService.getUpdateInfo(AppConfig.UPDATE_URL)
+            val result = fetchClientCatalog(useRecentCache = isAuto)
+            result.onSuccess { catalog ->
+                val info = catalog.appUpdate
+                if (info == null) {
+                    _updateInfo.value = null
+                    if (!isAuto) {
+                        _error.value = "后台未启用版本更新"
+                    }
+                    return@onSuccess
                 }
-            }
-            result.onSuccess { info ->
                 val currentVersionCode = getApplication<Application>().packageManager
                     .getPackageInfo(getApplication<Application>().packageName, 0)
                     .let { 
@@ -1742,6 +2045,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _startupUpdateCheckCompleted.value = true
                 }
             }
+        }
+    }
+
+    private fun applyRemoteCatalog(catalog: ClientCatalogInfo) {
+        _remoteAppSettings.value = catalog.settings ?: RemoteAppSettings()
+        _updateCheckAvailable.value = catalog.appUpdate != null
+    }
+
+    private suspend fun fetchClientCatalog(useRecentCache: Boolean): Result<ClientCatalogInfo> {
+        val now = System.currentTimeMillis()
+        val cached = cachedClientCatalog
+        if (useRecentCache && cached != null && now - cachedClientCatalogAt <= CLIENT_CATALOG_CACHE_MS) {
+            return Result.success(cached)
+        }
+        return requestWithAutoRetry("远程配置") {
+            withTimeout(AppConfig.NODE_REQUEST_TIMEOUT_MS) {
+                val envelope = NetworkClient.apiService.getClientBootstrap(AppConfig.BOOTSTRAP_URL)
+                val catalog = envelope.data
+                if (!envelope.ok || catalog == null) {
+                    throw IOException("远程配置请求失败：${envelope.error ?: "invalid_response"}")
+                }
+                val crypto = catalog.crypto
+                if (crypto?.version != 2 ||
+                    crypto.algorithm != xyz.a202132.app.util.crypto.CryptoV2Protocol.ALGORITHM
+                ) {
+                    throw IOException("服务端 Crypto V2 配置不兼容")
+                }
+                catalog
+            }
+        }.onSuccess { catalog ->
+            cachedClientCatalog = catalog
+            cachedClientCatalogAt = System.currentTimeMillis()
+            applyRemoteCatalog(catalog)
         }
     }
     
@@ -1858,6 +2194,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearInfoDialogMessage() {
         _infoDialogMessage.value = null
     }
+
+    fun dismissFireflyAccessBanDialog() {
+        _fireflyAccessBanDialogVisible.value = false
+    }
+
+    fun retryFireflyAccessAfterBan() {
+        viewModelScope.launch {
+            _fireflyAccessBanDialogVisible.value = false
+            val recovered = fetchNodesInternal(
+                bypassThrottle = true,
+                runUrlTest = false,
+                fetchingLabel = "重新检测访问状态",
+                showToast = true,
+                groupId = DEFAULT_SUBSCRIPTION_GROUP_ID
+            )
+            if (!recovered) return@launch
+
+            val firstBuiltInGroup = subscriptionDao.getGroupsOnce()
+                .firstOrNull { isBuiltInSubscriptionGroup(it.id) }
+            if (firstBuiltInGroup != null &&
+                settingsRepository.selectedNodeGroupId.first() == FAVORITES_NODE_GROUP_ID
+            ) {
+                settingsRepository.setSelectedNodeGroupId(firstBuiltInGroup.id)
+            }
+            _error.value = "访问状态已恢复，内置节点已重新加载"
+        }
+    }
+
+    private suspend fun handleFireflyAccessBan(errorCode: String) {
+        // 先展示提示，再执行数据库清理，避免慢磁盘或并发事务让弹窗迟迟不出现。
+        _fireflyAccessBanDialogVisible.value = true
+        try {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val selectedNode = settingsRepository.selectedNodeId.first()
+                    ?.let { nodeDao.getNodeById(it) }
+
+                subscriptionDao.deleteBuiltInGroups(
+                    defaultGroupId = DEFAULT_SUBSCRIPTION_GROUP_ID,
+                    builtInPrefix = BUILT_IN_SUBSCRIPTION_GROUP_PREFIX
+                )
+
+                if (
+                    selectedNode?.source == NodeSource.SUBSCRIPTION &&
+                    selectedNode.subscriptionGroupId?.let(::isBuiltInSubscriptionGroup) == true
+                ) {
+                    settingsRepository.setSelectedNodeId(null)
+                }
+                // 保留被清理的内置分组 ID。这样下次启动或手动重试仍会访问
+                // Firefly 服务，而不会永久落入只读本地收藏分组。
+            }
+
+            lastFetchedNodes = null
+            _filterUnavailable.value = false
+            _autoTestResultSnapshot.value = _autoTestResultSnapshot.value.filterNot { node ->
+                node.source == NodeSource.SUBSCRIPTION &&
+                    node.subscriptionGroupId?.let(::isBuiltInSubscriptionGroup) == true
+            }
+            RuntimeLog.warn(tag, "Firefly access banned; local built-in subscription groups removed ($errorCode)")
+        } catch (error: Exception) {
+            Log.e(tag, "Failed to clear built-in subscription data after access ban", error)
+            RuntimeLog.error(tag, "Failed to clear built-in subscription data after access ban", error)
+        }
+    }
     
     fun acceptUserAgreement() {
         viewModelScope.launch {
@@ -1866,67 +2265,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // 自动化测试设置写入
+    private fun invalidateAutoTestResults() {
+        _autoTestResultSnapshot.value = emptyList()
+        _autoTestResultMode.value = null
+    }
+
     fun setAutoTestEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAutoTestEnabled(enabled) }
     }
 
     fun setAutoTestFilterUnavailable(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestFilterUnavailable(enabled) }
     }
 
     fun setAutoTestLatencyEnabled(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestLatencyEnabled(enabled) }
     }
 
     fun setAutoTestLatencyMode(mode: AutoTestLatencyMode) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestLatencyMode(mode) }
     }
 
     fun setAutoTestLatencyThresholdMs(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestLatencyThresholdMs(value) }
     }
 
     fun setAutoTestBandwidthEnabled(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthEnabled(enabled) }
     }
 
     fun setAutoTestBandwidthDownloadEnabled(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadEnabled(enabled) }
     }
 
     fun setAutoTestBandwidthUploadEnabled(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadEnabled(enabled) }
     }
 
     fun setAutoTestBandwidthDownloadThresholdMbps(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadThresholdMbps(value) }
     }
 
     fun setAutoTestBandwidthUploadThresholdMbps(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadThresholdMbps(value) }
     }
 
     fun setAutoTestBandwidthWifiOnly(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthWifiOnly(enabled) }
     }
 
     fun setAutoTestBandwidthDownloadSizeMb(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthDownloadSizeMb(value) }
     }
 
     fun setAutoTestBandwidthUploadSizeMb(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestBandwidthUploadSizeMb(value) }
     }
 
     fun setAutoTestUnlockEnabled(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestUnlockEnabled(enabled) }
     }
 
     fun setAutoTestByRegion(enabled: Boolean) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestByRegion(enabled) }
     }
 
     fun setAutoTestNodeLimit(value: Int) {
+        invalidateAutoTestResults()
         viewModelScope.launch { settingsRepository.setAutoTestNodeLimit(value) }
     }
 
@@ -1935,6 +2354,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun applyPreferTestMode(modeId: String) {
+        invalidateAutoTestResults()
         viewModelScope.launch {
             val mode = preferTestModes.value.firstOrNull { it.id == modeId } ?: return@launch
             applyPreferTestModeInternal(mode)
@@ -1942,31 +2362,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun applyPreferTestModeInternal(mode: TestPreferMode) {
-        settingsRepository.setPreferTestSelectedModeId(mode.id)
-        settingsRepository.setAutoTestFilterUnavailable(mode.filterUnavailable)
-        settingsRepository.setAutoTestLatencyEnabled(mode.latencyEnabled)
-        settingsRepository.setAutoTestLatencyMode(mode.latencyMode)
-        settingsRepository.setAutoTestLatencyThresholdMs(mode.latencyThresholdMs)
-        settingsRepository.setAutoTestBandwidthEnabled(mode.bandwidthEnabled)
-        settingsRepository.setAutoTestBandwidthDownloadEnabled(mode.bandwidthDownloadEnabled)
-        settingsRepository.setAutoTestBandwidthUploadEnabled(mode.bandwidthUploadEnabled)
-        settingsRepository.setAutoTestBandwidthDownloadThresholdMbps(mode.bandwidthDownloadThresholdMbps)
-        settingsRepository.setAutoTestBandwidthUploadThresholdMbps(mode.bandwidthUploadThresholdMbps)
-        settingsRepository.setAutoTestBandwidthWifiOnly(mode.bandwidthWifiOnly)
-        settingsRepository.setAutoTestBandwidthDownloadSizeMb(mode.bandwidthDownloadSizeMb)
-        settingsRepository.setAutoTestBandwidthUploadSizeMb(mode.bandwidthUploadSizeMb)
-        settingsRepository.setAutoTestUnlockEnabled(mode.unlockEnabled)
-        settingsRepository.setAutoTestByRegion(mode.byRegion)
-        settingsRepository.setAutoTestNodeLimit(mode.nodeLimit)
+        settingsRepository.applyPreferTestMode(mode)
     }
 
-    fun saveCurrentPreferTestMode(name: String) {
+    fun saveCurrentPreferTestMode(name: String, configOverride: AutoTestConfig? = null) {
         val trimmed = name.trim()
         if (trimmed.isBlank()) {
             _error.value = "模式名称不能为空"
             return
         }
         viewModelScope.launch {
+            val config = configOverride ?: readAutoTestConfigFromSettings()
             val existing = preferTestModes.value
             val selectedId = preferTestSelectedModeId.value
             val selectedMode = existing.firstOrNull { it.id == selectedId }
@@ -1977,24 +2383,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 id = modeId,
                 name = modeName,
                 builtIn = savingBuiltIn,
-                filterUnavailable = autoTestFilterUnavailable.value,
-                latencyEnabled = autoTestLatencyEnabled.value,
-                latencyMode = autoTestLatencyMode.value,
-                latencyThresholdMs = autoTestLatencyThresholdMs.value,
-                bandwidthEnabled = autoTestBandwidthEnabled.value,
-                bandwidthDownloadEnabled = autoTestBandwidthDownloadEnabled.value,
-                bandwidthUploadEnabled = autoTestBandwidthUploadEnabled.value,
-                bandwidthDownloadThresholdMbps = autoTestBandwidthDownloadThresholdMbps.value,
-                bandwidthUploadThresholdMbps = autoTestBandwidthUploadThresholdMbps.value,
-                bandwidthWifiOnly = autoTestBandwidthWifiOnly.value,
-                bandwidthDownloadSizeMb = autoTestBandwidthDownloadSizeMb.value,
-                bandwidthUploadSizeMb = autoTestBandwidthUploadSizeMb.value,
-                unlockEnabled = autoTestUnlockEnabled.value,
-                byRegion = autoTestByRegion.value,
-                nodeLimit = autoTestNodeLimit.value,
+                filterUnavailable = config.filterUnavailable,
+                latencyEnabled = config.latencyEnabled,
+                latencyMode = config.latencyMode,
+                latencyThresholdMs = config.latencyThresholdMs,
+                bandwidthEnabled = config.bandwidthEnabled,
+                bandwidthDownloadEnabled = config.bandwidthDownloadEnabled,
+                bandwidthUploadEnabled = config.bandwidthUploadEnabled,
+                bandwidthDownloadThresholdMbps = config.bandwidthDownloadThresholdMbps,
+                bandwidthUploadThresholdMbps = config.bandwidthUploadThresholdMbps,
+                bandwidthWifiOnly = config.bandwidthWifiOnly,
+                bandwidthDownloadSizeMb = config.bandwidthDownloadSizeMb,
+                bandwidthUploadSizeMb = config.bandwidthUploadSizeMb,
+                unlockEnabled = config.unlockEnabled,
+                byRegion = config.byRegion,
+                nodeLimit = config.nodeLimit,
                 defaultPriority = selectedMode?.defaultPriority ?: BestNodePriority.LATENCY,
+                priorityOrder = selectedMode?.normalizePriorityOrder()?.priorityOrder
+                    ?: BestNodePriority.entries.toList(),
                 unlockPriorityMode = selectedMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
-                unlockPriorityTargetSiteIds = selectedMode?.unlockPriorityTargetSiteIds ?: emptyList()
+                unlockPriorityTargetSiteIds = selectedMode?.unlockPriorityTargetSiteIds ?: emptyList(),
+                autoConnectBest = selectedMode?.autoConnectBest ?: false
             )
             val updated = existing.filterNot { it.id == modeId || (!it.builtIn && it.name == modeName) } + newMode
             settingsRepository.setPreferTestModes(updated)
@@ -2037,8 +2446,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 byRegion = autoTestByRegion.value,
                 nodeLimit = autoTestNodeLimit.value,
                 defaultPriority = currentMode?.defaultPriority ?: BestNodePriority.LATENCY,
+                priorityOrder = currentMode?.normalizePriorityOrder()?.priorityOrder
+                    ?: BestNodePriority.entries.toList(),
                 unlockPriorityMode = currentMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
-                unlockPriorityTargetSiteIds = currentMode?.unlockPriorityTargetSiteIds ?: emptyList()
+                unlockPriorityTargetSiteIds = currentMode?.unlockPriorityTargetSiteIds ?: emptyList(),
+                autoConnectBest = currentMode?.autoConnectBest ?: false
             )
             settingsRepository.setPreferTestModes(existing + newMode)
             settingsRepository.setPreferTestSelectedModeId(newMode.id)
@@ -2068,8 +2480,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val currentId = preferTestSelectedModeId.value
             val existing = preferTestModes.value
             val target = existing.firstOrNull { it.id == currentId } ?: return@launch
-            val updatedMode = target.copy(defaultPriority = priority)
+            val priorityOrder = listOf(priority) + target.normalizePriorityOrder().priorityOrder
+                .filterNot { it == priority }
+            val updatedMode = target.copy(
+                defaultPriority = priority,
+                priorityOrder = priorityOrder
+            )
             val updated = existing.map { if (it.id == currentId) updatedMode else it }
+            settingsRepository.setPreferTestModes(updated)
+        }
+    }
+
+    fun updateCurrentPreferModePriorityOrder(priorityOrder: List<BestNodePriority>) {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val existing = preferTestModes.value
+            val target = existing.firstOrNull { it.id == currentId } ?: return@launch
+            val normalizedOrder = buildList {
+                priorityOrder.distinct().forEach(::add)
+                BestNodePriority.entries.filterNot { it in this }.forEach(::add)
+            }
+            if (normalizedOrder.isEmpty()) return@launch
+            val updatedMode = target.copy(
+                defaultPriority = normalizedOrder.first(),
+                priorityOrder = normalizedOrder
+            )
+            val updated = existing.map { if (it.id == currentId) updatedMode else it }
+            settingsRepository.setPreferTestModes(updated)
+        }
+    }
+
+    fun updateCurrentPreferModeAutoConnect(autoConnectBest: Boolean) {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val existing = preferTestModes.value
+            val target = existing.firstOrNull { it.id == currentId } ?: return@launch
+            val updated = existing.map {
+                if (it.id == currentId) target.copy(autoConnectBest = autoConnectBest) else it
+            }
             settingsRepository.setPreferTestModes(updated)
         }
     }
@@ -2097,11 +2545,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         configOverride: AutoTestConfig? = null,
         modeOverride: TestPreferMode? = null
     ) {
-        if (_autoTestProgress.value.running) return
+        if (autoTestJob?.isActive == true || _autoTestProgress.value.running) return
 
         autoTestJob = viewModelScope.launch {
             val config = configOverride ?: readAutoTestConfigFromSettings()
+            val bandwidthRunnable = config.bandwidthEnabled &&
+                (config.bandwidthDownloadEnabled || config.bandwidthUploadEnabled)
+            if (!config.latencyEnabled && !bandwidthRunnable && !config.unlockEnabled) {
+                _error.value = "请至少启用一个可执行的测试项目"
+                return@launch
+            }
+            if (
+                !config.latencyEnabled &&
+                !config.unlockEnabled &&
+                bandwidthRunnable &&
+                config.bandwidthWifiOnly &&
+                !NetworkUtils.isWifiConnected(getApplication())
+            ) {
+                _error.value = "当前不是 Wi-Fi 网络，无法执行仅 Wi-Fi 带宽测试"
+                return@launch
+            }
+            val selectedModeForRun = modeOverride
+                ?: preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
+            val modeForRun = selectedModeForRun?.withAutoTestConfig(config)
             _autoTestResultSnapshot.value = emptyList()
+            _autoTestResultMode.value = null
             if (GlobalTestExecution.isFetching()) {
                 _error.value = GlobalTestExecution.fetchingHint()
                 _isAutoSelecting.value = false
@@ -2123,7 +2591,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     message = "正在拉取节点..."
                 )
 
-                val fetchOk = if (settingsRepository.nodeListCategory.first() == NodeListCategory.PRIMARY) fetchNodesInternal(
+                val fetchOk = if (settingsRepository.selectedNodeGroupId.first() != FAVORITES_NODE_GROUP_ID) fetchNodesInternal(
                     bypassThrottle = true,
                     runUrlTest = false,
                     allowWhenTestRunning = true,
@@ -2181,7 +2649,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                     } else {
-                        urlTestAllNodesInternal(
+                        val urlTestJob = urlTestAllNodesInternal(
                             targetNodes = workingNodes,
                             requireGlobalLock = false,
                             onProgress = { completed, total ->
@@ -2194,7 +2662,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 )
                             }
                         )
-                        waitForUrlTestCompletion(startTimeoutMs = 12_000, finishTimeoutMs = 120_000)
+                        try {
+                            urlTestJob.join()
+                        } catch (e: CancellationException) {
+                            urlTestJob.cancel()
+                            withContext(NonCancellable) { urlTestJob.join() }
+                            throw e
+                        }
                     }
 
                     val latestNodesById = nodeDao.getAllNodes().first().associateBy { it.id }
@@ -2215,15 +2689,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         total = workingNodes.size
                     )
 
-                    val latencyFiltered = if (config.filterUnavailable) {
-                        workingNodes.filter { it.isAvailable && it.latency > 0 && it.latency <= config.latencyThresholdMs }
-                    } else {
-                        workingNodes
+                    val latencyFiltered = workingNodes.filter { node ->
+                        AutoTestQualificationPolicy.keepAfterLatency(
+                            filterUnqualified = config.filterUnavailable,
+                            isAvailable = node.isAvailable,
+                            latencyMs = node.latency,
+                            thresholdMs = config.latencyThresholdMs
+                        )
                     }
 
                     val removedByLatency = workingNodes.filterNot { node -> latencyFiltered.any { it.id == node.id } }
                     removedByLatency.forEach { node ->
-                        nodeDao.updateAutoTestStatus(node.id, false, "LATENCY_FILTERED", System.currentTimeMillis())
+                        nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "LATENCY_FILTERED", System.currentTimeMillis())
                     }
                     workingNodes = latencyFiltered.map { node ->
                         val status = if (node.latency > 0) "LATENCY_PASSED" else "LATENCY_SKIPPED"
@@ -2309,24 +2786,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             total = workingNodes.size
                         )
 
+                        val bandwidthQualified = workingNodes.filter { node ->
+                            AutoTestQualificationPolicy.bandwidthPassed(
+                                downloadEnabled = config.bandwidthDownloadEnabled,
+                                uploadEnabled = config.bandwidthUploadEnabled,
+                                downloadMbps = node.downloadMbps,
+                                uploadMbps = node.uploadMbps,
+                                downloadThresholdMbps = config.bandwidthDownloadThresholdMbps,
+                                uploadThresholdMbps = config.bandwidthUploadThresholdMbps
+                            )
+                        }
+                        val qualifiedIds = bandwidthQualified.mapTo(hashSetOf()) { it.id }
                         val filtered = workingNodes.filter { node ->
-                            val downloadThreshold = config.bandwidthDownloadThresholdMbps.toFloat()
-                            val uploadThreshold = config.bandwidthUploadThresholdMbps.toFloat()
-                            val downloadValue = node.downloadMbps
-                            val uploadValue = node.uploadMbps
-                            val downloadMeasured = !config.bandwidthDownloadEnabled || downloadValue > 0f
-                            val uploadMeasured = !config.bandwidthUploadEnabled || uploadValue > 0f
-                            val downloadPassed = !config.bandwidthDownloadEnabled || (downloadMeasured && downloadValue >= downloadThreshold)
-                            val uploadPassed = !config.bandwidthUploadEnabled || (uploadMeasured && uploadValue >= uploadThreshold)
-                            downloadPassed && uploadPassed
+                            AutoTestQualificationPolicy.keepAfterRule(
+                                filterUnqualified = config.filterUnavailable,
+                                passed = node.id in qualifiedIds
+                            )
                         }
                         val removed = workingNodes.filterNot { node -> filtered.any { it.id == node.id } }
                         removed.forEach { node ->
-                            nodeDao.updateAutoTestStatus(node.id, false, "BANDWIDTH_FILTERED", System.currentTimeMillis())
+                            nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "BANDWIDTH_FILTERED", System.currentTimeMillis())
                         }
                         workingNodes = filtered.map { node ->
-                            nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "BANDWIDTH_PASSED", System.currentTimeMillis())
-                            node.copy(autoTestStatus = "BANDWIDTH_PASSED", autoTestedAt = System.currentTimeMillis())
+                            val passed = node.id in qualifiedIds
+                            val status = if (passed) "BANDWIDTH_PASSED" else "BANDWIDTH_FAILED"
+                            val available = AutoTestQualificationPolicy.connectivityAfterSuccessfulTest(
+                                wasAvailable = node.isAvailable,
+                                testPassed = passed
+                            )
+                            nodeDao.updateAutoTestStatus(node.id, available, status, System.currentTimeMillis())
+                            node.copy(
+                                isAvailable = available,
+                                autoTestStatus = status,
+                                autoTestedAt = System.currentTimeMillis()
+                            )
                         }
                     }
                     if (!wifiAllowed || (!config.bandwidthDownloadEnabled && !config.bandwidthUploadEnabled)) {
@@ -2365,7 +2858,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     nodeDao.updateUnlock(node.id, summary, passed, now)
                                     nodeDao.updateAutoTestStatus(
                                         nodeId = node.id,
-                                        available = node.isAvailable && passed,
+                                        available = AutoTestQualificationPolicy.connectivityAfterSuccessfulTest(
+                                            wasAvailable = node.isAvailable,
+                                            testPassed = passed
+                                        ),
                                         status = if (passed) "UNLOCK_PASSED" else "UNLOCK_FAILED",
                                         testedAt = now
                                     )
@@ -2382,39 +2878,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }.awaitAll()
                     }
-                    workingNodes = workingNodes.map { node ->
+                    val unlockTestedNodes = workingNodes.map { node ->
                         val result = unlockResults[node.id] ?: ("" to false)
                         val passed = result.second
                         node.copy(
                             unlockSummary = result.first,
                             unlockPassed = passed,
-                            isAvailable = node.isAvailable && passed,
+                            isAvailable = AutoTestQualificationPolicy.connectivityAfterSuccessfulTest(
+                                wasAvailable = node.isAvailable,
+                                testPassed = passed
+                            ),
                             autoTestStatus = if (passed) "UNLOCK_PASSED" else "UNLOCK_FAILED",
                             autoTestedAt = System.currentTimeMillis()
                         )
                     }
+                    workingNodes = unlockTestedNodes.filter { node ->
+                        AutoTestQualificationPolicy.keepAfterRule(
+                            filterUnqualified = config.filterUnavailable,
+                            passed = node.unlockPassed
+                        )
+                    }
                 }
 
+                val priorityOrder = resolvePriorityOrder(modeForRun, preferPriority)
+                val snapshotPriority = priorityOrder.first()
+                val sortedSnapshot = sortNodesForSnapshotByOrder(
+                    nodes = workingNodes,
+                    priorityOrder = priorityOrder,
+                    mode = modeForRun
+                )
+                _autoTestResultSnapshot.value = sortedSnapshot.map { it.copy() }
+                _autoTestResultMode.value = modeForRun
+                _autoTestResultPriority.value = snapshotPriority
                 _autoTestProgress.value = AutoTestProgress(
                     running = false,
                     stage = AutoTestStage.DONE,
                     message = "完成：保留 ${workingNodes.size} 个节点",
-                    completed = workingNodes.size,
+                    completed = initialSelectedCount,
                     total = initialSelectedCount
                 )
                 RuntimeLog.info(tag, "Automated test completed: kept=${workingNodes.size}, selected=$initialSelectedCount")
-                val currentPreferMode = modeOverride ?: preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
-                val snapshotPriority = preferPriority ?: currentPreferMode?.defaultPriority ?: BestNodePriority.LATENCY
-                val sortedSnapshot = sortNodesForSnapshot(
-                    nodes = workingNodes,
-                    priority = snapshotPriority,
-                    mode = currentPreferMode
-                )
-                _autoTestResultSnapshot.value = sortedSnapshot.map { it.copy() }
 
-                if (preferPriority != null && workingNodes.isNotEmpty()) {
+                if (preferPriority != null) {
                     val finalCandidates = workingNodes.filter { it.isAvailable }
-                    val bestNode = pickBestNode(finalCandidates, preferPriority, currentPreferMode)
+                    val bestNode = pickBestNodeByOrder(finalCandidates, priorityOrder, modeForRun)
                     if (bestNode != null) {
                         settingsRepository.setSelectedNodeId(bestNode.id)
                         if (connectBestAfterDone) {
@@ -2427,6 +2934,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _error.value = "测试完成，但未找到符合择优规则的节点"
                     }
                 }
+            } catch (e: CancellationException) {
+                RuntimeLog.info(tag, "Automated test canceled")
+                _autoTestProgress.value = AutoTestProgress(
+                    running = false,
+                    stage = AutoTestStage.CANCELED,
+                    message = "自动化测试已取消"
+                )
+                throw e
             } catch (e: Exception) {
                 Log.e(tag, "Automated test failed", e)
                 RuntimeLog.error(tag, "Automated test failed", e)
@@ -2467,14 +2982,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun TestPreferMode.withAutoTestConfig(config: AutoTestConfig): TestPreferMode = copy(
+        filterUnavailable = config.filterUnavailable,
+        latencyEnabled = config.latencyEnabled,
+        latencyMode = config.latencyMode,
+        latencyThresholdMs = config.latencyThresholdMs,
+        bandwidthEnabled = config.bandwidthEnabled,
+        bandwidthDownloadEnabled = config.bandwidthDownloadEnabled,
+        bandwidthUploadEnabled = config.bandwidthUploadEnabled,
+        bandwidthDownloadThresholdMbps = config.bandwidthDownloadThresholdMbps,
+        bandwidthUploadThresholdMbps = config.bandwidthUploadThresholdMbps,
+        bandwidthWifiOnly = config.bandwidthWifiOnly,
+        bandwidthDownloadSizeMb = config.bandwidthDownloadSizeMb,
+        bandwidthUploadSizeMb = config.bandwidthUploadSizeMb,
+        unlockEnabled = config.unlockEnabled,
+        byRegion = config.byRegion,
+        nodeLimit = config.nodeLimit
+    )
+
     fun cancelAutomatedTest() {
         autoTestJob?.cancel()
-        autoTestJob = null
         _isAutoSelecting.value = false
         _autoTestProgress.value = AutoTestProgress(
-            running = false,
+            running = true,
             stage = AutoTestStage.CANCELED,
-            message = "自动化测试已取消"
+            message = "正在取消测试..."
         )
     }
 
@@ -2491,10 +3023,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun currentNodeListSnapshot(): List<Node> {
-        val category = settingsRepository.nodeListCategory.first()
-        val snapshot = when (category) {
-            NodeListCategory.PRIMARY -> nodeDao.getSubscriptionNodes().first()
-            NodeListCategory.FAVORITES -> nodeDao.getFavoriteNodes().first()
+        val groupId = settingsRepository.selectedNodeGroupId.first()
+        val snapshot = if (groupId == FAVORITES_NODE_GROUP_ID) {
+            nodeDao.getFavoriteNodes().first()
+        } else {
+            nodeDao.getSubscriptionNodes(groupId).first()
         }
         return sortNodesForList(snapshot, _filterUnavailable.value)
     }
@@ -2539,17 +3072,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun waitForUrlTestCompletion(startTimeoutMs: Long, finishTimeoutMs: Long) {
-        val start = System.currentTimeMillis()
-        while (!isTesting.value && System.currentTimeMillis() - start < startTimeoutMs) {
-            delay(100)
-        }
-        if (!isTesting.value) {
-            throw IllegalStateException("URL test并没有启动")
-        }
-        waitForCondition(timeoutMs = finishTimeoutMs) { !isTesting.value }
-    }
-
     private suspend fun restoreRememberedLastSelectedNodeIfNeeded(freshNodes: List<Node>? = null) {
         if (!settingsRepository.rememberLastSelectedNodeEnabled.first()) return
         val rememberedNodeId = settingsRepository.lastSelectedNodeId.first()?.takeIf { it.isNotBlank() } ?: return
@@ -2581,6 +3103,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _error.value = GlobalTestExecution.busyHint()
                 return@launch
             }
+            if (selectedNodeGroupId.value == FAVORITES_NODE_GROUP_ID) {
+                val wasFiltering = _filterUnavailable.value
+                _filterUnavailable.value = false
+                _error.value = if (wasFiltering) "已恢复显示全部收藏节点" else "收藏节点已刷新"
+                return@launch
+            }
             val mode = settingsRepository.startupDefaultTestMode.first()
             val fetchOk = fetchNodesInternal(
                 bypassThrottle = true,
@@ -2600,7 +3128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun waitForNodesReadyWithAutoRetry(timeoutMs: Long): Boolean {
         val firstAttempt = runCatching {
             waitForCondition(timeoutMs = timeoutMs) {
-                !isLoading.value && (nodes.value.isNotEmpty() || nodeListCategory.value == NodeListCategory.FAVORITES)
+                !isLoading.value && (nodes.value.isNotEmpty() || selectedNodeGroupId.value == FAVORITES_NODE_GROUP_ID)
             }
         }
         if (firstAttempt.isSuccess) return true
@@ -2609,7 +3137,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val retryOk = fetchNodesInternal(
             bypassThrottle = true,
             runUrlTest = false,
-            allowWhenFetchingInProgress = true,
             fetchingLabel = "请求节点中"
         )
         if (!retryOk) {
@@ -2619,7 +3146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val secondAttempt = runCatching {
             waitForCondition(timeoutMs = timeoutMs) {
-                !isLoading.value && (nodes.value.isNotEmpty() || nodeListCategory.value == NodeListCategory.FAVORITES)
+                !isLoading.value && (nodes.value.isNotEmpty() || selectedNodeGroupId.value == FAVORITES_NODE_GROUP_ID)
             }
         }
         if (secondAttempt.isSuccess) return true
@@ -2650,7 +3177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         if (mode == StartupDefaultTestMode.NONE) return
         if (_isTesting.value || _autoTestProgress.value.running) return
-        val freshTargetNodes = if (nodeListCategory.value == NodeListCategory.PRIMARY) freshNodes else null
+        val freshTargetNodes = if (selectedNodeGroupId.value != FAVORITES_NODE_GROUP_ID) freshNodes else null
         when (mode) {
             StartupDefaultTestMode.TCPING -> {
                 if (showHint) _error.value = "已按默认设置执行 TCPing 测试"
@@ -2759,32 +3286,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
-            val builder = NetworkClient.withUserAgent(OkHttpClient.Builder())
-                .proxy(proxy)
-                .connectTimeout(12, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-            if (speedTestDownloadTimeoutMs.value > 0L) {
-                builder.callTimeout(speedTestDownloadTimeoutMs.value, TimeUnit.MILLISECONDS)
-            }
-            val client = builder.build()
-
             val bytes = sizeMb.toLong() * 1_000_000L
-            val url = "${AppConfig.SPEED_TEST_DOWNLOAD_URL}?bytes=$bytes&r=${System.currentTimeMillis()}"
-            val request = Request.Builder().url(url).build()
-
-            val start = System.currentTimeMillis()
-            var total = 0L
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext 0f
-                val source = resp.body?.source() ?: return@withContext 0f
-                val buffer = ByteArray(8192)
-                var read: Int
-                while (source.read(buffer).also { read = it } != -1) {
-                    total += read
-                }
-            }
-            val durationMs = (System.currentTimeMillis() - start).coerceAtLeast(1)
-            (total * 8f / 1_000_000f) / (durationMs / 1000f)
+            SpeedTestService(
+                downloadTimeoutMs = speedTestDownloadTimeoutMs.value,
+                proxy = proxy
+            ).startDownloadTest(bytes) { _, _ -> }.avgSpeedMbps
         } catch (e: Exception) {
             Log.e(tag, "Download bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
             0f
@@ -2801,46 +3307,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
-            val builder = NetworkClient.withUserAgent(OkHttpClient.Builder())
-                .proxy(proxy)
-                .connectTimeout(12, TimeUnit.SECONDS)
-                .readTimeout(45, TimeUnit.SECONDS)
-                .writeTimeout(45, TimeUnit.SECONDS)
-            if (AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS > 0L) {
-                builder.callTimeout(AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            }
-            val client = builder.build()
-
             val bytes = sizeMb.toLong() * 1_000_000L
-            val randomBuffer = ByteArray(8192) { 0x5A.toByte() }
-            val requestBody = object : RequestBody() {
-                override fun contentType() = "application/octet-stream".toMediaType()
-
-                override fun contentLength(): Long = bytes
-
-                override fun writeTo(sink: BufferedSink) {
-                    var uploaded = 0L
-                    while (uploaded < bytes) {
-                        val remain = bytes - uploaded
-                        val writeSize = minOf(remain.toInt(), randomBuffer.size)
-                        sink.write(randomBuffer, 0, writeSize)
-                        uploaded += writeSize
-                    }
-                }
-            }
-
-            val request = Request.Builder()
-                .url(AppConfig.SPEED_TEST_UPLOAD_URL)
-                .post(requestBody)
-                .build()
-
-            val start = System.currentTimeMillis()
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext 0f
-                resp.body?.close()
-            }
-            val durationMs = (System.currentTimeMillis() - start).coerceAtLeast(1)
-            (bytes * 8f / 1_000_000f) / (durationMs / 1000f)
+            SpeedTestService(
+                uploadTimeoutMs = AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS,
+                proxy = proxy
+            ).startUploadTest(bytes) { _, _ -> }.avgSpeedMbps
         } catch (e: Exception) {
             Log.e(tag, "Upload bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
             0f
@@ -2920,6 +3391,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .thenBy { if (mode?.bandwidthEnabled == true && mode.bandwidthDownloadEnabled) it.downloadMbps else 0f }
                         .thenBy { -safeLatency(it) }
                 )
+        }
+    }
+
+    private fun resolvePriorityOrder(
+        mode: TestPreferMode?,
+        preferredPriority: BestNodePriority?
+    ): List<BestNodePriority> {
+        val configured = mode?.normalizePriorityOrder()?.priorityOrder
+            ?: BestNodePriority.entries.toList()
+        val preferredFirst = if (preferredPriority == null) {
+            configured
+        } else {
+            listOf(preferredPriority) + configured.filterNot { it == preferredPriority }
+        }
+        val active = if (mode == null) preferredFirst else preferredFirst.filter(mode::supportsPriority)
+        return active.ifEmpty { listOf(preferredPriority ?: BestNodePriority.LATENCY) }
+    }
+
+    private fun pickBestNodeByOrder(
+        candidates: List<Node>,
+        priorityOrder: List<BestNodePriority>,
+        mode: TestPreferMode?
+    ): Node? = candidates.minWithOrNull(priorityOrderComparator(priorityOrder, mode))
+
+    private fun sortNodesForSnapshotByOrder(
+        nodes: List<Node>,
+        priorityOrder: List<BestNodePriority>,
+        mode: TestPreferMode?
+    ): List<Node> = nodes.sortedWith(priorityOrderComparator(priorityOrder, mode))
+
+    private fun priorityOrderComparator(
+        priorityOrder: List<BestNodePriority>,
+        mode: TestPreferMode?
+    ): Comparator<Node> = Comparator { left, right ->
+        priorityOrder.forEach { priority ->
+            val comparison = compareNodeMetric(left, right, priority, mode)
+            if (comparison != 0) return@Comparator comparison
+        }
+        val nameComparison = left.getDisplayName().compareTo(right.getDisplayName(), ignoreCase = true)
+        if (nameComparison != 0) nameComparison else left.id.compareTo(right.id)
+    }
+
+    private fun compareNodeMetric(
+        left: Node,
+        right: Node,
+        priority: BestNodePriority,
+        mode: TestPreferMode?
+    ): Int = when (priority) {
+        BestNodePriority.LATENCY -> {
+            val leftValue = if (left.latency > 0) left.latency else Int.MAX_VALUE
+            val rightValue = if (right.latency > 0) right.latency else Int.MAX_VALUE
+            leftValue.compareTo(rightValue)
+        }
+        BestNodePriority.UPLOAD -> right.uploadMbps.compareTo(left.uploadMbps)
+        BestNodePriority.DOWNLOAD -> right.downloadMbps.compareTo(left.downloadMbps)
+        BestNodePriority.UNLOCK_COUNT -> {
+            val scoreComparison = unlockPriorityScore(right, mode).compareTo(unlockPriorityScore(left, mode))
+            if (scoreComparison != 0) {
+                scoreComparison
+            } else {
+                extractUnlockYesCount(right.unlockSummary).compareTo(extractUnlockYesCount(left.unlockSummary))
+            }
         }
     }
 
@@ -3011,37 +3544,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return ServerSocket(0).use { it.localPort }
     }
 
-    private suspend fun migrateRawLinksToEncrypted() {
+    private suspend fun migrateLegacyRawLinksToSqlCipher() {
         runCatching {
             val current = nodeDao.getAllNodes().first()
             var migrated = 0
+            var failed = 0
             current.forEach { node ->
-                if (!node.isRawLinkEncrypted()) {
-                    val encrypted = CryptoUtils.encryptForStorage(node.rawLink)
-                    if (encrypted != node.rawLink) {
-                        nodeDao.updateNode(node.copy(rawLink = encrypted))
+                if (node.isRawLinkEncrypted()) {
+                    val plaintext = LegacyRawLinkMigrationCrypto.decryptOrNull(node.rawLink)
+                    if (plaintext != null) {
+                        nodeDao.updateNode(node.copy(rawLink = plaintext))
                         migrated++
+                    } else {
+                        failed++
                     }
                 }
             }
-            if (migrated > 0) {
-                Log.i(tag, "Migrated $migrated node rawLink entries to encrypted storage")
-            }
+            Log.i(tag, "Legacy rawLink migration completed: migrated=$migrated failed=$failed")
         }.onFailure {
-            Log.w(tag, "RawLink migration skipped: ${it.message}")
-        }
-    }
-
-    private suspend fun logRawLinkEncryptionStats(scene: String) {
-        if (!BuildConfig.DEBUG) return
-        runCatching {
-            val current = nodeDao.getAllNodes().first()
-            val total = current.size
-            val encrypted = current.count { it.isRawLinkEncrypted() }
-            val plain = total - encrypted
-            Log.d("RawLinkCryptoStats", "scene=$scene total=$total encrypted=$encrypted plain=$plain")
-        }.onFailure {
-            Log.w("RawLinkCryptoStats", "scene=$scene stats_failed=${it.message}")
+            Log.w(tag, "Legacy rawLink migration skipped: ${it.message}")
         }
     }
 }

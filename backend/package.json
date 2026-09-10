@@ -1,0 +1,32 @@
+{
+  "name": "firefly-vpn-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "demo:d1:remote": "wrangler d1 execute DB --remote --file database/seeds/demo.sql",
+    "demo:kv:remote": "wrangler kv key put subscription:managed:demo-main --path database/seeds/demo-subscription.txt --binding CONFIG --remote",
+    "demo:cleanup:d1:remote": "wrangler d1 execute DB --remote --file database/seeds/cleanup_demo.sql",
+    "demo:cleanup:kv:remote": "wrangler kv key delete subscription:managed:demo-main --binding CONFIG --remote"
+  },
+  "dependencies": {
+    "hono": "^4.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260906.1",
+    "miniflare": "5.20260903.0-alpha",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.33.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

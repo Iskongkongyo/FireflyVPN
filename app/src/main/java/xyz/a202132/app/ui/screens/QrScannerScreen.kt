@@ -131,7 +131,7 @@ fun QrScannerScreen(
     }
 }
 
-@OptIn(ExperimentalGetImage::class)
+@androidx.annotation.OptIn(markerClass = [ExperimentalGetImage::class])
 @Composable
 private fun QrCameraPreview(
     modifier: Modifier = Modifier,
