@@ -1,4 +1,4 @@
-name: Sync Release APK to Cloudflare R2
+name: Sync Release APKs to Cloudflare R2
 
 on:
   release:
@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.10.0). Required when manually running."
+        description: "Release tag (e.g. v2.4.0). Required when manually running."
         required: true
         type: string
 
 permissions:
   contents: read
 
-# 同一个 tag 短时间内触发多次（published/edited/重新发布等），只保留最后一次
+# 同一个 tag 被 published / edited / 手动重复触发时，只保留最后一次任务。
 concurrency:
   group: r2-sync-${{ github.repository }}-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: true
@@ -26,9 +26,6 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-      APK_NAME: FireflyVPN.apk
-
-      # 你的公开下载域名（你这里应当设置为 https://firefly.202132.xyz）
       R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
 
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -36,115 +33,187 @@ jobs:
       AWS_DEFAULT_REGION: auto
 
     steps:
-      - name: Checkout (optional)
-        uses: actions/checkout@v4
-
-      - name: Install awscli
+      - name: Validate configuration
+        shell: bash
         run: |
-          python3 -m pip install --upgrade pip
-          pip install awscli
+          set -euo pipefail
 
-      - name: Ensure gh exists
-        run: |
-          set -e
-          if command -v gh >/dev/null 2>&1; then
-            gh --version
-          else
-            sudo apt-get update
-            sudo apt-get install -y gh
-            gh --version
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "ERROR: Release tag is empty."
+            exit 1
           fi
 
-      - name: Download APK asset from GitHub Release
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "ERROR: $name is not configured."
+              exit 1
+            fi
+          done
+
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Release tag: $TAG"
+
+      - name: Install awscli
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet awscli
+          aws --version
+          gh --version
+
+      - name: Download all APK assets from GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
 
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          echo "Release tag: $TAG"
+          # 不再写死 FireflyVPN.apk；自动下载该 Release 中的所有 APK。
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.apk' \
+            --dir dist \
+            --clobber
 
-          if [ -z "$TAG" ]; then
-            echo "ERROR: TAG is empty. If you ran workflow manually, please provide inputs.tag."
+          mapfile -t APK_FILES < <(find dist -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort)
+
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "ERROR: No APK assets found in release $TAG."
+            echo "Release assets:"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' || true
             exit 1
           fi
 
-          # 找到名为 FireflyVPN.apk 的 asset 并下载
-          ASSET_URL=$(gh api repos/${{ github.repository }}/releases/tags/$TAG \
-            --jq '.assets[] | select(.name=="'"$APK_NAME"'") | .url')
-
-          if [ -z "${ASSET_URL:-}" ]; then
-            echo "ERROR: Asset $APK_NAME not found in release $TAG"
-            echo "Available assets:"
-            gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.assets[].name'
+          # FireflyVPN 当前按 32/64 位分别发布。少于两个 APK 时直接失败，
+          # 防止只把其中一个架构更新到 latest，形成半更新状态。
+          if [ "${#APK_FILES[@]}" -lt 2 ]; then
+            echo "ERROR: Expected at least 2 APK assets (32-bit + 64-bit), but found ${#APK_FILES[@]}."
+            printf '  - %s\n' "${APK_FILES[@]}"
             exit 1
           fi
 
-          # 用 GitHub API 下载 asset（二进制）
-          curl -L \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/octet-stream" \
-            "$ASSET_URL" \
-            -o "$APK_NAME"
+          echo "Found ${#APK_FILES[@]} APK assets:"
+          printf '  - %s\n' "${APK_FILES[@]}"
+          ls -lh dist/*.apk
 
-          ls -lh "$APK_NAME"
-
-      - name: Generate SHA256
+      - name: Generate SHA256 files
+        shell: bash
         run: |
           set -euo pipefail
-          sha256sum "$APK_NAME" | tee "${APK_NAME}.sha256"
 
-      # 真正去重：如果 R2 上 latest 的 sha256 一样，就直接跳过上传
-      - name: Skip upload if same as current latest on R2
+          while IFS= read -r -d '' apk; do
+            name="$(basename "$apk")"
+            sha256sum "$apk" | sed "s#  .*#  $name#" > "${apk}.sha256"
+            echo "$name: $(cut -d' ' -f1 "${apk}.sha256")"
+          done < <(find dist -maxdepth 1 -type f -name '*.apk' -print0)
+
+      - name: Upload all APKs to R2
+        shell: bash
         run: |
           set -euo pipefail
-          LOCAL_SHA=$(cut -d' ' -f1 "${APK_NAME}.sha256" || true)
-          echo "Local sha256: $LOCAL_SHA"
 
-          if [ -n "${R2_PUBLIC_BASE:-}" ]; then
-            REMOTE_URL="${R2_PUBLIC_BASE}/latest/${APK_NAME}.sha256"
-            echo "Fetch remote sha256: $REMOTE_URL"
+          upload_apk() {
+            local apk="$1"
+            local name
+            local local_sha
+            local remote_sha=""
 
-            REMOTE_SHA=$(curl -fsSL "$REMOTE_URL" | cut -d' ' -f1 || true)
-            echo "Remote sha256: ${REMOTE_SHA:-<empty>}"
+            name="$(basename "$apk")"
+            local_sha="$(cut -d' ' -f1 "${apk}.sha256")"
 
-            if [ -n "${REMOTE_SHA:-}" ] && [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
-              echo "Same APK already on R2 (latest). Skip upload."
-              exit 0
+            echo ""
+            echo "========== $name =========="
+            echo "SHA256: $local_sha"
+
+            # 1) 版本目录始终按 Release 原文件名保存：/<tag>/<asset-name>.apk
+            aws s3 cp "$apk" "s3://${R2_BUCKET}/${TAG}/${name}" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "application/vnd.android.package-archive" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --no-progress
+
+            aws s3 cp "${apk}.sha256" "s3://${R2_BUCKET}/${TAG}/${name}.sha256" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --no-progress
+
+            # 2) latest 按“每个 APK”分别比较 SHA256。
+            #    使用 R2 S3 API 读取，而不是公开域名，避免 CDN 缓存造成误判。
+            remote_sha="$(
+              aws s3 cp "s3://${R2_BUCKET}/latest/${name}.sha256" - \
+                --endpoint-url "$R2_ENDPOINT" \
+                --no-progress 2>/dev/null | awk 'NR==1 {print $1}' || true
+            )"
+
+            if [ -n "$remote_sha" ] && [ "$remote_sha" = "$local_sha" ]; then
+              echo "latest/$name is already current; skip latest upload."
+              return 0
             fi
-          else
-            echo "R2_PUBLIC_BASE not set; cannot compare. Continue upload."
-          fi
 
-      - name: Upload to R2 (versioned + latest)
+            echo "Updating latest/$name"
+            aws s3 cp "$apk" "s3://${R2_BUCKET}/latest/${name}" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "application/vnd.android.package-archive" \
+              --cache-control "public, max-age=300, must-revalidate" \
+              --no-progress
+
+            aws s3 cp "${apk}.sha256" "s3://${R2_BUCKET}/latest/${name}.sha256" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "no-cache" \
+              --no-progress
+          }
+
+          # 循环处理 Release 中的全部 APK；32/64 位会在同一个 job 中全部同步。
+          while IFS= read -r -d '' apk; do
+            upload_apk "$apk"
+          done < <(find dist -maxdepth 1 -type f -name '*.apk' -print0 | sort -z)
+
+      - name: Verify R2 objects
+        shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          echo "Upload tag: $TAG"
 
-          # 1) 版本目录：/<tag>/FireflyVPN.apk
-          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}" \
-            --endpoint-url "${R2_ENDPOINT}"
+          while IFS= read -r -d '' apk; do
+            name="$(basename "$apk")"
 
-          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/${TAG}/${APK_NAME}.sha256" \
-            --endpoint-url "${R2_ENDPOINT}"
+            aws s3api head-object \
+              --bucket "$R2_BUCKET" \
+              --key "${TAG}/${name}" \
+              --endpoint-url "$R2_ENDPOINT" >/dev/null
 
-          # 2) 最新目录：/latest/FireflyVPN.apk
-          aws s3 cp "$APK_NAME" "s3://${R2_BUCKET}/latest/${APK_NAME}" \
-            --endpoint-url "${R2_ENDPOINT}"
+            aws s3api head-object \
+              --bucket "$R2_BUCKET" \
+              --key "latest/${name}" \
+              --endpoint-url "$R2_ENDPOINT" >/dev/null
 
-          aws s3 cp "${APK_NAME}.sha256" "s3://${R2_BUCKET}/latest/${APK_NAME}.sha256" \
-            --endpoint-url "${R2_ENDPOINT}"
+            echo "OK: $name"
+          done < <(find dist -maxdepth 1 -type f -name '*.apk' -print0 | sort -z)
 
       - name: Print public URLs
+        shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          if [ -n "${R2_PUBLIC_BASE:-}" ]; then
-            echo "Versioned APK: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}"
-            echo "Versioned SHA: ${R2_PUBLIC_BASE}/${TAG}/${APK_NAME}.sha256"
-            echo "Latest APK:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}"
-            echo "Latest SHA:    ${R2_PUBLIC_BASE}/latest/${APK_NAME}.sha256"
-          else
-            echo "R2_PUBLIC_BASE not set. Set it to your custom domain base URL, e.g. https://firefly.202132.xyz"
+
+          if [ -z "${R2_PUBLIC_BASE:-}" ]; then
+            echo "R2_PUBLIC_BASE is not set; upload succeeded but public URLs cannot be printed."
+            exit 0
           fi
+
+          BASE="${R2_PUBLIC_BASE%/}"
+          echo ""
+          echo "Uploaded APK URLs:"
+
+          while IFS= read -r -d '' apk; do
+            name="$(basename "$apk")"
+            echo ""
+            echo "[$name]"
+            echo "Versioned APK: $BASE/$TAG/$name"
+            echo "Versioned SHA: $BASE/$TAG/$name.sha256"
+            echo "Latest APK:    $BASE/latest/$name"
+            echo "Latest SHA:    $BASE/latest/$name.sha256"
+          done < <(find dist -maxdepth 1 -type f -name '*.apk' -print0 | sort -z)
