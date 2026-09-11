@@ -21,7 +21,6 @@ export async function aggregateUsage(
   report: UsageReportInput,
   day: string,
   month: string,
-  nowIso: string,
 ): Promise<void> {
   try {
     await db.batch([
@@ -41,9 +40,6 @@ export async function aggregateUsage(
           upload_bytes = upload_bytes + excluded.upload_bytes,
           download_bytes = download_bytes + excluded.download_bytes
       `).bind(device.accountId, month, report.uploadBytes, report.downloadBytes),
-      db.prepare(`
-        UPDATE devices SET last_seen_at = ?2, updated_at = ?2 WHERE id = ?1
-      `).bind(device.deviceId, nowIso),
     ]);
   } catch (error) {
     // Let a client retry if aggregation failed after the idempotency marker insert.

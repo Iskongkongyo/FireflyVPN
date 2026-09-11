@@ -12,7 +12,7 @@ import {
   CRYPTO_VERSION_HEADER,
   CRYPTO_V2_VERSION,
 } from "./protocol";
-import { enforceRateLimit, requestClientIp } from "./rate-guard";
+import { enforceRateLimit } from "./rate-guard";
 import { consumeChallenge } from "./replay-guard";
 
 export function registerSecureDeliveryRoutes(app: Hono<AppContext>): void {
@@ -33,10 +33,8 @@ export function registerSecureDeliveryRoutes(app: Hono<AppContext>): void {
 
     const device = await authenticateDevice(request, context.env);
     await enforceRateLimit(context.env.DB, "subscription_content", {
-      ip: requestClientIp(request),
       deviceId: device.deviceId,
-      token: device.tokenHash,
-    });
+    }, Date.now(), context.env);
     await consumeChallenge(context.env.DB, device.deviceId, challenge);
     const { source, content } = await getSubscriptionPlaintext(context.env, context.req.param("id"));
     const envelope = await encryptSubscription({

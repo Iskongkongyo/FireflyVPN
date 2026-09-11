@@ -6,15 +6,36 @@ export type RateLimitAction =
   | "subscription_content"
   | "rotate_key";
 
-type Dimension = "ip" | "deviceId" | "token";
+type Dimension = "ip" | "deviceId";
+
+export interface NativeRateLimitBindings {
+  DEVICE_ENROLL_IP_RATE_LIMITER?: RateLimit;
+  DEVICE_ENROLL_DEVICE_RATE_LIMITER?: RateLimit;
+  SUBSCRIPTION_DEVICE_RATE_LIMITER?: RateLimit;
+  ROTATE_DEVICE_RATE_LIMITER?: RateLimit;
+}
+
+type NativeRateLimitBindingName = keyof NativeRateLimitBindings;
 
 export const RATE_LIMITS: Record<
   RateLimitAction,
   Partial<Record<Dimension, number>>
 > = {
   device_enroll: { ip: 30, deviceId: 6 },
-  subscription_content: { ip: 180, deviceId: 60, token: 60 },
-  rotate_key: { ip: 10, deviceId: 3, token: 3 },
+  subscription_content: { deviceId: 60 },
+  rotate_key: { deviceId: 3 },
+};
+
+const NATIVE_RATE_LIMITERS: Record<
+  RateLimitAction,
+  Partial<Record<Dimension, NativeRateLimitBindingName>>
+> = {
+  device_enroll: {
+    ip: "DEVICE_ENROLL_IP_RATE_LIMITER",
+    deviceId: "DEVICE_ENROLL_DEVICE_RATE_LIMITER",
+  },
+  subscription_content: { deviceId: "SUBSCRIPTION_DEVICE_RATE_LIMITER" },
+  rotate_key: { deviceId: "ROTATE_DEVICE_RATE_LIMITER" },
 };
 
 export type RateLimitIdentities = Partial<Record<Dimension, string>>;
@@ -24,6 +45,7 @@ export async function enforceRateLimit(
   action: RateLimitAction,
   identities: RateLimitIdentities,
   nowEpochMilliseconds = Date.now(),
+  nativeBindings?: NativeRateLimitBindings,
 ): Promise<void> {
   const windowStart = Math.floor(nowEpochMilliseconds / 60_000);
   const limits = RATE_LIMITS[action];
@@ -32,6 +54,16 @@ export async function enforceRateLimit(
     const identity = identities[dimension];
     if (!identity) continue;
     const identityHash = await sha256Base64Url(identity);
+    const bindingName = NATIVE_RATE_LIMITERS[action][dimension];
+    const nativeLimiter = bindingName === undefined ? undefined : nativeBindings?.[bindingName];
+    if (nativeLimiter !== undefined) {
+      const outcome = await nativeLimiter.limit({ key: identityHash });
+      if (!outcome.success) throw new AppError("rate_limited", 429);
+      continue;
+    }
+
+    // Miniflare tests and deployments without native bindings retain the D1
+    // fallback so rate limiting never silently disappears.
     const row = await db.prepare(`
       INSERT INTO crypto_rate_limits (
         scope, identity_hash, window_start, request_count
@@ -44,16 +76,6 @@ export async function enforceRateLimit(
 
     if ((row?.requestCount ?? limit + 1) > limit) {
       throw new AppError("rate_limited", 429);
-    }
-  }
-
-  if (crypto.getRandomValues(new Uint8Array(1))[0] === 0) {
-    try {
-      await db.prepare("DELETE FROM crypto_rate_limits WHERE window_start < ?1")
-        .bind(windowStart - 2)
-        .run();
-    } catch {
-      // Cleanup is best-effort; it never changes the result of the current request.
     }
   }
 }

@@ -56,16 +56,32 @@ export async function createAnonymousDevice(
   ]);
 }
 
-export async function touchDevice(
+export const DEVICE_ACTIVITY_TOUCH_INTERVAL_MS = 15 * 60_000;
+
+export async function touchDeviceIfStale(
   db: D1Database,
   deviceId: string,
-  nowIso: string,
-): Promise<void> {
-  await db.prepare(`
+  lastSeenAt: string,
+  now = new Date(),
+): Promise<boolean> {
+  const nowMilliseconds = now.getTime();
+  const lastSeenMilliseconds = Date.parse(lastSeenAt);
+  if (
+    Number.isFinite(lastSeenMilliseconds)
+    && lastSeenMilliseconds <= nowMilliseconds
+    && nowMilliseconds - lastSeenMilliseconds < DEVICE_ACTIVITY_TOUCH_INTERVAL_MS
+  ) {
+    return false;
+  }
+
+  const nowIso = now.toISOString();
+  const staleBeforeIso = new Date(nowMilliseconds - DEVICE_ACTIVITY_TOUCH_INTERVAL_MS).toISOString();
+  const result = await db.prepare(`
     UPDATE devices
     SET last_seen_at = ?2, updated_at = ?2
-    WHERE id = ?1
-  `).bind(deviceId, nowIso).run();
+    WHERE id = ?1 AND (last_seen_at <= ?3 OR last_seen_at > ?2)
+  `).bind(deviceId, nowIso, staleBeforeIso).run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function listAccountDevices(

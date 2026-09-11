@@ -1,7 +1,8 @@
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import migrationSql from "../../database/migrations/0001_bootstrap.sql?raw";
+import writeOptimizationSql from "../../database/migrations/0006_d1_write_optimization.sql?raw";
 import { encodeBase64Url } from "../../src/foundation/crypto/base64url";
 import { AppError } from "../../src/foundation/http/errors";
 import { cleanupExpiredSecurityState } from "../../src/modules/security-maintenance/service";
@@ -21,7 +22,7 @@ describe("security state maintenance", () => {
       d1Databases: ["DB"],
     }));
     db = await miniflare.getD1Database("DB") as unknown as D1Database;
-    const statements = migrationSql
+    const statements = `${migrationSql}\n${writeOptimizationSql}`
       .replace(/^PRAGMA foreign_keys = ON;\s*/u, "")
       .split(";")
       .map((statement) => statement.trim())
@@ -50,6 +51,37 @@ describe("security state maintenance", () => {
     await expect(enforceRateLimit(db, "rotate_key", { deviceId }, nowMilliseconds)).rejects.toEqual(
       expect.objectContaining<Partial<AppError>>({ code: "rate_limited", status: 429 }),
     );
+  });
+
+  it("uses native rate-limit bindings without creating D1 counter rows", async () => {
+    const accepted = { limit: vi.fn(async () => ({ success: true })) } as unknown as RateLimit;
+    const denied = { limit: vi.fn(async () => ({ success: false })) } as unknown as RateLimit;
+    const deviceId = "d".repeat(64);
+
+    await expect(enforceRateLimit(
+      db,
+      "subscription_content",
+      { deviceId },
+      Date.UTC(2026, 8, 6),
+      { SUBSCRIPTION_DEVICE_RATE_LIMITER: accepted },
+    )).resolves.toBeUndefined();
+    expect(accepted.limit).toHaveBeenCalledOnce();
+
+    await expect(enforceRateLimit(
+      db,
+      "subscription_content",
+      { deviceId },
+      Date.UTC(2026, 8, 6),
+      { SUBSCRIPTION_DEVICE_RATE_LIMITER: denied },
+    )).rejects.toEqual(expect.objectContaining<Partial<AppError>>({
+      code: "rate_limited",
+      status: 429,
+    }));
+    expect(denied.limit).toHaveBeenCalledOnce();
+
+    const counters = await db.prepare("SELECT COUNT(*) AS count FROM crypto_rate_limits")
+      .first<{ count: number }>();
+    expect(counters?.count).toBe(0);
   });
 
   it("deletes expired replay and rate-limit rows but keeps current rows", async () => {

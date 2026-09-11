@@ -10,6 +10,7 @@ import {
   clearSourceContent,
   managedContentKey,
   readSubscriptionContent,
+  writeManagedSubscriptionContent,
 } from "./content-store";
 import type {
   SubscriptionSourceInput,
@@ -145,11 +146,13 @@ export async function getSubscriptionPlaintext(
   if (!SOURCE_ID_PATTERN.test(sourceId)) throw new AppError("subscription_not_found", 404);
   const source = await findSource(env.DB, sourceId, true);
   if (source === null) throw new AppError("subscription_not_found", 404);
-  const runtime = await readRuntimeConfig(env);
+  const timeoutMilliseconds = source.sourceType === "external"
+    ? (await readRuntimeConfig(env)).settings.subscriptionFetchTimeoutMs
+    : 0;
   const content = await readSubscriptionContent(
     source,
     env.CONFIG,
-    runtime.settings.subscriptionFetchTimeoutMs,
+    timeoutMilliseconds,
     forceRefresh,
   );
   validateSubscriptionContent(content);
@@ -182,11 +185,13 @@ export async function inspectAdminSource(
   if (!SOURCE_ID_PATTERN.test(sourceId)) throw new AppError("subscription_not_found", 404);
   const source = await findSource(env.DB, sourceId);
   if (source === null) throw new AppError("subscription_not_found", 404);
-  const runtime = await readRuntimeConfig(env);
+  const timeoutMilliseconds = source.sourceType === "external"
+    ? (await readRuntimeConfig(env)).settings.subscriptionFetchTimeoutMs
+    : 0;
   const content = await readSubscriptionContent(
     source,
     env.CONFIG,
-    runtime.settings.subscriptionFetchTimeoutMs,
+    timeoutMilliseconds,
     forceRefresh,
   );
   validateSubscriptionContent(content);
@@ -202,7 +207,7 @@ export async function createSubscriptionSource(
     throw new AppError("invalid_request", 409);
   }
   if (input.sourceType === "managed") {
-    await env.CONFIG.put(managedContentKey(input.id), input.managedContent!);
+    await writeManagedSubscriptionContent(env.CONFIG, input.id, input.managedContent!);
   }
   try {
     await insertSource(env.DB, input, new Date().toISOString());
@@ -231,13 +236,13 @@ export async function patchSubscriptionSource(
   }
 
   if (input.sourceType === "managed" && input.managedContent !== undefined) {
-    await env.CONFIG.put(managedContentKey(input.id), input.managedContent);
+    await writeManagedSubscriptionContent(env.CONFIG, input.id, input.managedContent);
   }
   await updateSource(env.DB, input, new Date().toISOString());
   if (current.sourceType !== input.sourceType || current.sourceUrl !== input.sourceUrl) {
     await clearSourceContent(env.CONFIG, input.id);
     if (input.sourceType === "managed" && input.managedContent !== undefined) {
-      await env.CONFIG.put(managedContentKey(input.id), input.managedContent);
+      await writeManagedSubscriptionContent(env.CONFIG, input.id, input.managedContent);
     }
   }
   return (await findSource(env.DB, input.id))!;

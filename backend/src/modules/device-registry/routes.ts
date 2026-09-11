@@ -18,6 +18,7 @@ export function registerDeviceRegistryRoutes(app: Hono<AppContext>): void {
       context.req.raw,
       context.env.DB,
       await readJsonBody(context.req.raw),
+      context.env,
     );
     return success(result, result.alreadyEnrolled ? 200 : 201);
   });
@@ -50,6 +51,7 @@ export function registerDeviceRegistryRoutes(app: Hono<AppContext>): void {
       device,
       context.req.param("deviceId"),
       await readJsonBody(request),
+      context.env,
     );
     await writeAdminAudit(context.env, request, {
       action: "device.rotate_key",

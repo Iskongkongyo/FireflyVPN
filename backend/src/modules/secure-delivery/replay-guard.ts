@@ -31,14 +31,4 @@ export async function consumeChallenge(
     if (isUniqueConstraintError(error)) throw new AppError("replay_detected", 409);
     throw new AppError("internal_error", 500);
   }
-
-  if (crypto.getRandomValues(new Uint8Array(1))[0] === 0) {
-    try {
-      await db.prepare("DELETE FROM crypto_replay_nonces WHERE expires_at < ?1")
-        .bind(nowEpochSeconds)
-        .run();
-    } catch {
-      // Cleanup is best-effort and never invalidates a successfully consumed challenge.
-    }
-  }
 }

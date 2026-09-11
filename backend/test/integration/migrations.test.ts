@@ -6,6 +6,7 @@ import anonymousAccountsSql from "../../database/migrations/0002_anonymous_accou
 import subscriptionNotesSql from "../../database/migrations/0003_subscription_notes.sql?raw";
 import auditIpAddressSql from "../../database/migrations/0004_audit_ip_address.sql?raw";
 import adminJwtSql from "../../database/migrations/0005_admin_jwt.sql?raw";
+import writeOptimizationSql from "../../database/migrations/0006_d1_write_optimization.sql?raw";
 
 async function executeSql(db: D1Database, sql: string): Promise<void> {
   const statements = sql
@@ -126,5 +127,44 @@ describe("D1 migrations", () => {
     const source = await db.prepare("SELECT id, name, note FROM subscription_sources WHERE id = 'main'")
       .first<{ id: string; name: string; note: string | null }>();
     expect(source).toEqual({ id: "main", name: "主线路", note: null });
+  });
+
+  it("compacts high-churn tables without losing replay or usage idempotency state", async () => {
+    await executeSql(db, bootstrapSql);
+    await db.batch([
+      db.prepare("INSERT INTO crypto_rate_limits VALUES ('scope', 'identity', 1, 2)"),
+      db.prepare("INSERT INTO crypto_replay_nonces VALUES ('device', 'challenge', 1, 2)"),
+      db.prepare("INSERT INTO usage_sessions VALUES ('device', 'session', 'account', '2026-09-06T12:00:00.000Z')"),
+    ]);
+
+    await executeSql(db, writeOptimizationSql);
+
+    const counts = await db.prepare(`
+      SELECT (SELECT COUNT(*) FROM crypto_rate_limits) AS rateLimits,
+             (SELECT COUNT(*) FROM crypto_replay_nonces) AS replayNonces,
+             (SELECT COUNT(*) FROM usage_sessions) AS usageSessions
+    `).first<{ rateLimits: number; replayNonces: number; usageSessions: number }>();
+    expect(counts).toEqual({ rateLimits: 0, replayNonces: 1, usageSessions: 1 });
+
+    const compactTables = await db.prepare(`
+      SELECT name, sql FROM sqlite_master
+      WHERE type = 'table'
+        AND name IN ('crypto_rate_limits', 'crypto_replay_nonces', 'usage_sessions')
+      ORDER BY name
+    `).all<{ name: string; sql: string }>();
+    expect(compactTables.results).toHaveLength(3);
+    expect(compactTables.results.every((table) => /WITHOUT ROWID/iu.test(table.sql))).toBe(true);
+
+    const removedIndexes = await db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index'
+        AND name IN (
+          'idx_devices_last_seen_at',
+          'idx_crypto_rate_limits_window',
+          'idx_crypto_replay_expires_at',
+          'idx_usage_sessions_reported_at'
+        )
+    `).all<{ name: string }>();
+    expect(removedIndexes.results).toEqual([]);
   });
 });

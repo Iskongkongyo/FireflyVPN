@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import migrationSql from "../../database/migrations/0001_bootstrap.sql?raw";
 import auditIpAddressSql from "../../database/migrations/0004_audit_ip_address.sql?raw";
+import writeOptimizationSql from "../../database/migrations/0006_d1_write_optimization.sql?raw";
 import type { Env } from "../../src/app/env";
 import { createApp } from "../../src/app/router";
 import { encodeBase64Url } from "../../src/foundation/crypto/base64url";
@@ -10,6 +11,7 @@ import { sha256Base64Url } from "../../src/foundation/crypto/digest";
 import { AppError } from "../../src/foundation/http/errors";
 import { authenticateDevice } from "../../src/modules/secure-delivery/authenticator";
 import { enforceRateLimit } from "../../src/modules/secure-delivery/rate-guard";
+import { touchDeviceIfStale } from "../../src/modules/device-registry/repository";
 
 const DEVICE_ID = "a".repeat(64);
 const IP_ADDRESS = "203.0.113.10";
@@ -49,7 +51,7 @@ describe("anonymous device enrollment", () => {
       kvNamespaces: ["CONFIG"],
     }));
     const db = await miniflare.getD1Database("DB");
-    const statements = `${migrationSql}\n${auditIpAddressSql}`
+    const statements = `${migrationSql}\n${auditIpAddressSql}\n${writeOptimizationSql}`
       .replace(/^PRAGMA foreign_keys = ON;\s*/u, "")
       .split(";")
       .map((statement) => statement.trim())
@@ -253,6 +255,37 @@ describe("anonymous device enrollment", () => {
       code: "unauthorized",
       status: 401,
     });
+  });
+
+  it("updates device activity at most once per fifteen minutes", async () => {
+    await enroll();
+    const staleAt = "2026-09-06T11:00:00.000Z";
+    const firstTouchAt = new Date("2026-09-06T12:00:00.000Z");
+    await env.DB.prepare("UPDATE devices SET last_seen_at = ?2, updated_at = ?2 WHERE id = ?1")
+      .bind(DEVICE_ID, staleAt)
+      .run();
+
+    await expect(touchDeviceIfStale(env.DB, DEVICE_ID, staleAt, firstTouchAt)).resolves.toBe(true);
+    await expect(touchDeviceIfStale(
+      env.DB,
+      DEVICE_ID,
+      firstTouchAt.toISOString(),
+      new Date("2026-09-06T12:14:59.999Z"),
+    )).resolves.toBe(false);
+    expect((await env.DB.prepare("SELECT last_seen_at AS lastSeenAt FROM devices WHERE id = ?1")
+      .bind(DEVICE_ID)
+      .first<{ lastSeenAt: string }>())?.lastSeenAt).toBe(firstTouchAt.toISOString());
+
+    const nextTouchAt = new Date("2026-09-06T12:15:00.000Z");
+    await expect(touchDeviceIfStale(
+      env.DB,
+      DEVICE_ID,
+      firstTouchAt.toISOString(),
+      nextTouchAt,
+    )).resolves.toBe(true);
+    expect((await env.DB.prepare("SELECT last_seen_at AS lastSeenAt FROM devices WHERE id = ?1")
+      .bind(DEVICE_ID)
+      .first<{ lastSeenAt: string }>())?.lastSeenAt).toBe(nextTouchAt.toISOString());
   });
 
   it("enforces the documented device enrollment boundary", async () => {

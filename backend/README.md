@@ -8,7 +8,7 @@ FireflyVPN 的新一代 Cloudflare Workers 后端。项目采用 TypeScript、Ho
 - `GET /health` 与 `GET /api/v2/bootstrap`。
 - `POST /api/v2/devices/enroll` 匿名设备注册。
 - 每设备独立 Device Token、Token 哈希存储及统一设备认证器。
-- 注册 IP/deviceId 限流、64 KiB JSON 上限和严格输入校验。
+- 基于 Cloudflare Rate Limiting Binding 的注册 IP/deviceId 与已认证设备限流、64 KiB JSON 上限和严格输入校验；本地测试保留 D1 回退。
 - 完整首版 D1 schema migration。
 - KV 运行时配置模型与安全的默认配置。
 - Crypto V2 Base64URL、P-256 SPKI 导入、ECDH、HKDF-SHA256、AES-256-GCM 和固定 AAD。
@@ -166,7 +166,7 @@ X-Firefly-Device-ID: <current-device-id>
 {"publicKey":"<new-P-256-SPKI-base64url>"}
 ```
 
-轮换受 IP、deviceId 与 Token 三维限流。成功后返回只出现一次的新 Device Token，旧 Token 立即失效，同时清理该设备的防重放记录。
+轮换受已认证 deviceId 限流。成功后返回只出现一次的新 Device Token，旧 Token 立即失效，同时清理该设备的防重放记录。
 
 ## 订阅源管理 API
 
@@ -204,9 +204,9 @@ POST   /<ADMIN_ROUTE>/api/subscriptions/:id/refresh
 }
 ```
 
-创建 external 订阅时将 `sourceType` 设为 `external` 并提供 `sourceUrl`。外部地址只允许 HTTPS；响应限制为 2 MiB，带超时、HTML/明显错误页检查和 KV TTL 缓存。真实 external URL 不会下发给客户端。
+创建 external 订阅时将 `sourceType` 设为 `external` 并提供 `sourceUrl`。外部地址只允许 HTTPS；响应限制为 2 MiB，带超时、HTML/明显错误页检查和 TTL 缓存。真实 external URL 不会下发给客户端。外部正文与刷新时间写在同一个 KV 键中，边缘缓存仍按源配置的 TTL 刷新，KV 持久化最多每小时一次，以避免 5 分钟刷新周期耗尽免费层写入额度；强制刷新仍会立即持久化。
 
-managed 正文只保存在 `subscription:managed:<id>`。列表、创建、修改响应和审计日志均不包含正文；只有受管理员 JWT 保护的单条详情接口会返回 `managedContent`，供控制台编辑时回填。`refresh` 仅用于 external 源。
+managed 正文只保存在 `subscription:managed:<id>`。列表、创建、修改响应和审计日志均不包含正文；只有受管理员 JWT 保护的单条详情接口会返回 `managedContent`，供控制台编辑时回填。运行配置与订阅正文使用短时实例缓存及 Cloudflare 数据中心本地 Cache API 吸收重复 KV 读取，源的 `updatedAt` 参与正文缓存键，后台修改后不会继续命中旧版本。`refresh` 仅用于 external 源。
 
 ## 管理控制台
 
@@ -334,7 +334,7 @@ X-Firefly-Device-ID: <device-id>
 - `database/migrations` 是唯一 schema 变更来源。
 - `public/console` 存放静态管理台，不把 HTML 拼进 Worker 源码。
 
-Cron Trigger 每小时清理过期 Challenge 与限流窗口；请求路径仍保留低概率尽力清理，避免定时任务延迟时无限积累。始终跳过邮箱、注册资料和密码相关账号功能。禁止在 Worker 启动时创建或修改表。
+Cron Trigger 每小时清理过期 Challenge 与 D1 回退限流窗口；生产请求使用 Cloudflare 原生限流，不写入 D1 限流表。设备活跃时间每 15 分钟至多更新一次，流量上报不会重复更新该字段。高频临时表使用 `WITHOUT ROWID`，并以较低的写入成本保留原子防重放与幂等约束。始终跳过邮箱、注册资料和密码相关账号功能。禁止在 Worker 启动时创建或修改表。
 
 完整接口约定见 [`API.md`](./API.md)。
 

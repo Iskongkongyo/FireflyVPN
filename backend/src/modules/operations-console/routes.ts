@@ -19,9 +19,8 @@ import { readAdminAccess, updateAdminAccess } from "./access-settings";
 import { readOrCreateJwtSecret, revokeAdminJwt } from "./jwt";
 import { sha256Base64Url } from "../../foundation/crypto/digest";
 import { decodeBase64Url } from "../../foundation/crypto/base64url";
-import { RUNTIME_CONFIG_KEY } from "../runtime-config/store";
 import { normalizeRuntimeConfig } from "../runtime-config/schema";
-import { readRuntimeConfig } from "../runtime-config/store";
+import { readRuntimeConfig, writeRuntimeConfig } from "../runtime-config/store";
 import { analytics, dashboard } from "../analytics/service";
 import {
   listAdminDevices,
@@ -338,7 +337,7 @@ export function registerOperationsRoutes(app: Hono<AppContext>): void {
   app.put("/:adminRoute/api/settings", async (context) => {
     await requireAdmin(context.req.raw, context.env, context.req.param("adminRoute"));
     const settings = normalizeRuntimeConfig(await readJsonBody(context.req.raw));
-    await context.env.CONFIG.put(RUNTIME_CONFIG_KEY, JSON.stringify(settings));
+    await writeRuntimeConfig(context.env, settings);
     await writeAdminAudit(context.env, context.req.raw, {
       action: "settings.update",
       targetType: "runtime-config",

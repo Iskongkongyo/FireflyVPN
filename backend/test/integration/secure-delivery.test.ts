@@ -5,6 +5,7 @@ import migrationSql from "../../database/migrations/0001_bootstrap.sql?raw";
 import subscriptionNotesSql from "../../database/migrations/0003_subscription_notes.sql?raw";
 import auditIpAddressSql from "../../database/migrations/0004_audit_ip_address.sql?raw";
 import adminJwtSql from "../../database/migrations/0005_admin_jwt.sql?raw";
+import writeOptimizationSql from "../../database/migrations/0006_d1_write_optimization.sql?raw";
 import type { Env } from "../../src/app/env";
 import { createApp } from "../../src/app/router";
 import { encodeBase64Url } from "../../src/foundation/crypto/base64url";
@@ -34,7 +35,7 @@ describe("secure subscription delivery", () => {
       kvNamespaces: ["CONFIG"],
     }));
     const db = await miniflare.getD1Database("DB");
-    const statements = `${migrationSql}\n${subscriptionNotesSql}\n${auditIpAddressSql}\n${adminJwtSql}`
+    const statements = `${migrationSql}\n${subscriptionNotesSql}\n${auditIpAddressSql}\n${adminJwtSql}\n${writeOptimizationSql}`
       .replace(/^PRAGMA foreign_keys = ON;\s*/u, "")
       .split(";")
       .map((statement) => statement.trim())

@@ -7,6 +7,7 @@ import { INPUT_LIMITS } from "../../foundation/security/input-limits";
 import { importP256PublicKey } from "../secure-delivery/encryptor";
 import {
   enforceRateLimit,
+  type NativeRateLimitBindings,
   requestClientIp,
 } from "../secure-delivery/rate-guard";
 import type {
@@ -22,7 +23,7 @@ import {
   listAccountDevices,
   revokeAccountDevice,
   rotateDeviceCredentials,
-  touchDevice,
+  touchDeviceIfStale,
 } from "./repository";
 import type { AuthenticatedDevice } from "../secure-delivery/authenticator";
 
@@ -108,13 +109,14 @@ export async function enrollDevice(
   request: Request,
   db: D1Database,
   untrustedBody: unknown,
+  rateLimiters?: NativeRateLimitBindings,
   now = new Date(),
 ): Promise<EnrollDeviceResult> {
   const input = await validateEnrollment(untrustedBody);
   await enforceRateLimit(db, "device_enroll", {
     ip: requestClientIp(request),
     deviceId: input.deviceId,
-  }, now.getTime());
+  }, now.getTime(), rateLimiters);
 
   const existing = await findDevice(db, input.deviceId);
   if (existing !== null) {
@@ -159,7 +161,7 @@ export async function enrollDevice(
       throw new AppError("unauthorized", 401);
     }
 
-    await touchDevice(db, existing.id, now.toISOString());
+    await touchDeviceIfStale(db, existing.id, existing.lastSeenAt, now);
     return {
       accountId: existing.accountId,
       deviceId: existing.id,
@@ -241,6 +243,7 @@ export async function rotateDeviceKey(
   authenticated: AuthenticatedDevice,
   targetDeviceId: string,
   untrustedBody: unknown,
+  rateLimiters?: NativeRateLimitBindings,
   now = new Date(),
 ): Promise<RotateDeviceKeyResult> {
   if (!DEVICE_ID_PATTERN.test(targetDeviceId) || targetDeviceId !== authenticated.deviceId) {
@@ -249,10 +252,8 @@ export async function rotateDeviceKey(
   const body = object(untrustedBody);
   const publicKey = await validatedPublicKey(body.publicKey);
   await enforceRateLimit(db, "rotate_key", {
-    ip: requestClientIp(request),
     deviceId: authenticated.deviceId,
-    token: authenticated.tokenHash,
-  }, now.getTime());
+  }, now.getTime(), rateLimiters);
 
   const deviceToken = encodeBase64Url(randomBytes(32));
   const tokenHash = await sha256Base64Url(deviceToken);

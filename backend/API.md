@@ -168,7 +168,7 @@ JWT 绑定当前 Admin Token 配置并带唯一 `jti`；修改 Admin Token、修
 - `POST /subscriptions/:id/test`
 - `POST /subscriptions/:id/refresh`
 
-托管正文保存在 KV；外部订阅源只接受无用户名/密码的 HTTPS URL，并启用超时、2 MiB 响应限制、HTML/错误页检测及 KV 缓存。订阅源可保存最多 200 个字符的可选备注。列表、创建、修改响应和审计日志不返回订阅正文；仅管理员读取单条托管订阅时返回 `managedContent`，供编辑回填。
+托管正文保存在 KV；外部订阅源只接受无用户名/密码的 HTTPS URL，并启用超时、2 MiB 响应限制、HTML/错误页检测及分层缓存。外部正文与刷新时间共用一个带 metadata 的 KV 键，内容仍按订阅源 TTL 刷新，常规 KV 持久化最多每小时一次；运行配置和正文的重复读取优先命中实例缓存或数据中心本地 Cache API。订阅源可保存最多 200 个字符的可选备注。列表、创建、修改响应和审计日志不返回订阅正文；仅管理员读取单条托管订阅时返回 `managedContent`，供编辑回填。
 
 ### 运行设置与审计
 
@@ -212,4 +212,4 @@ JWT 绑定当前 Admin Token 配置并带唯一 `jti`；修改 Admin Token、修
 
 ## 后台维护
 
-Wrangler Cron 每小时第 17 分钟清理过期的 `crypto_replay_nonces` 和旧 `crypto_rate_limits`。数据库结构只通过 `database/migrations` 变更，Worker 启动期间不会建表或改表。
+Wrangler Cron 每小时第 17 分钟清理过期的 `crypto_replay_nonces` 和 D1 回退限流窗口。生产限流使用 Cloudflare Rate Limiting Binding，不产生 D1 限流计数写入；设备活跃时间每 15 分钟至多落库一次。数据库结构只通过 `database/migrations` 变更，Worker 启动期间不会建表或改表。

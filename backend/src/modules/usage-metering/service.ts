@@ -47,6 +47,6 @@ export async function reportUsage(
   if (!inserted) return { duplicate: true, sessionId: report.sessionId };
 
   const { day, month } = businessPeriodKeys(now);
-  await aggregateUsage(db, device, report, day, month, nowIso);
+  await aggregateUsage(db, device, report, day, month);
   return { duplicate: false, sessionId: report.sessionId };
 }

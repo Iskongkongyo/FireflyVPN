@@ -4,7 +4,7 @@ import { sha256Base64Url } from "../../foundation/crypto/digest";
 import { AppError } from "../../foundation/http/errors";
 import { readBearerToken } from "../../foundation/security/bearer";
 import type { DevicePlatform } from "../device-registry/models";
-import { findDevice, touchDevice } from "../device-registry/repository";
+import { findDevice, touchDeviceIfStale } from "../device-registry/repository";
 import { DEVICE_ID_HEADER } from "./protocol";
 
 const DEVICE_ID_PATTERN = /^[a-f0-9]{64}$/;
@@ -20,6 +20,7 @@ export interface AuthenticatedDevice {
 export async function authenticateDevice(
   request: Request,
   env: Env,
+  now = new Date(),
 ): Promise<AuthenticatedDevice> {
   const deviceId = request.headers.get(DEVICE_ID_HEADER)?.trim() ?? "";
   const token = readBearerToken(request);
@@ -37,7 +38,7 @@ export async function authenticateDevice(
     throw new AppError("unauthorized", 401);
   }
 
-  await touchDevice(env.DB, deviceId, new Date().toISOString());
+  await touchDeviceIfStale(env.DB, deviceId, device.lastSeenAt, now);
   return {
     accountId: device.accountId,
     deviceId: device.id,
