@@ -209,8 +209,8 @@ npm test
 
 | 文档 | 用途 |
 | --- | --- |
-| [backend/worker(nodejs)/API.md](./backend/API.md) | 当前 /api/v2 接口契约 |
-| [backend/worker(nodejs)README.md](./backend/README.md) | 后端开发、D1/KV 初始化与部署 |
+| [backend/worker/API.md](./backend/worker/API.md)、[backend/nodejs/API.md](./backend/nodejs/API.md) | 当前 /api/v2 接口契约 |
+| [backend/worker/README.md](./backend/worker/README.md)、[backend/nodejs/README.md](./backend/nodejs/README.md) | 后端开发、D1/KV 初始化与部署 |
 
 <a id="license"></a>
 ## 📜 开源协议
