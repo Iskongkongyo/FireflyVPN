@@ -30,6 +30,7 @@ import xyz.a202132.app.util.RuntimeLog
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.first
 
 /**
@@ -46,6 +47,7 @@ class BoxVpnService : VpnService() {
         private const val TAG = "BoxVpnService"
         private const val CORE_STATUS_FRESH_MS = 3_500L
         private const val CORE_STATUS_STARTUP_GRACE_MS = 6_000L
+        private const val SLOW_CORE_SHUTDOWN_MS = 2_000L
         
         const val ACTION_START = "xyz.a202132.app.START_VPN"
         const val ACTION_STOP = "xyz.a202132.app.STOP_VPN"
@@ -89,12 +91,13 @@ class BoxVpnService : VpnService() {
         }
     }
     
-    private var commandServer: io.nekohasekai.libbox.CommandServer? = null
-    private var platformInterface: BoxPlatformInterface? = null
+    @Volatile private var commandServer: io.nekohasekai.libbox.CommandServer? = null
+    @Volatile private var platformInterface: BoxPlatformInterface? = null
     private val configGenerator = SingBoxConfigGenerator()
     private val usageReporter by lazy { FireflyUsageReporter(applicationContext) }
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    @Volatile private var isStopping = false
+    private val isStopping = AtomicBoolean(false)
+    private val resourceLock = Any()
     @Volatile private var currentUsageSessionId: String? = null
     
     override fun onCreate() {
@@ -137,7 +140,8 @@ class BoxVpnService : VpnService() {
                 stopSelf()
             }
         }
-        return START_STICKY
+        // VPN 连接依赖节点与模式参数，系统不能在 Intent 丢失后自行重建旧连接。
+        return START_NOT_STICKY
     }
     
     private fun startVpn(rawLink: String, nodeName: String, proxyMode: ProxyMode) {
@@ -363,7 +367,7 @@ class BoxVpnService : VpnService() {
 
     // Command Client 相关
     private var commandClientJob: kotlinx.coroutines.Job? = null
-    private var commandClient: io.nekohasekai.libbox.CommandClient? = null
+    @Volatile private var commandClient: io.nekohasekai.libbox.CommandClient? = null
     @Volatile private var currentTrafficSource: TrafficSource = TrafficSource.WAITING_FOR_CORE
     @Volatile private var lastSingBoxTrafficStatusAt: Long = 0L
     @Volatile private var trafficStatsFallbackActive = false
@@ -482,17 +486,6 @@ class BoxVpnService : VpnService() {
         }
     }
     
-    private fun stopCommandClient() {
-        commandClientJob?.cancel()
-        commandClientJob = null
-        try {
-            commandClient?.disconnect()
-        } catch (e: Exception) {
-            // ignore
-        }
-        commandClient = null
-    }
-
     private fun selectNodeInternal(nodeId: String) {
         serviceScope.launch {
             try {
@@ -782,30 +775,34 @@ class BoxVpnService : VpnService() {
         Log.d(TAG, "Stopping VPN - start")
         RuntimeLog.info(TAG, "VPN stop requested")
 
-        // 立即关闭 TUN，确保状态栏 VPN 图标尽快消失
-        try {
-            if (isStopping) {
-                Log.d(TAG, "Stopping VPN skipped: stop already in progress")
-                return
-            }
-            isStopping = true
+        if (!isStopping.compareAndSet(false, true)) {
+            Log.d(TAG, "Stopping VPN skipped: stop already in progress")
+            return
+        }
 
-            // 先停掉监控与命令通道，避免关闭阶段仍有后台任务继续占用核心资源。
-            stopCommandClient()
-            stopTrafficMonitor()
-
-            // 先解除底层网络绑定，帮助系统更早感知 VPN 已经开始 teardown。
-            try {
-                platformInterface?.prepareForVpnShutdown()
-                Log.d(TAG, "Underlying network detached in ${System.currentTimeMillis() - stopStartTime}ms")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error detaching underlying network", e)
-            }
-
-            platformInterface?.closeTun()
-            Log.d(TAG, "TUN closed in ${System.currentTimeMillis() - stopStartTime}ms")
+        // TUN 必须是关闭请求到达后的第一个阻塞操作。命令客户端或网络监控的
+        // JNI 调用都不能排在它前面，否则它们一旦卡住，系统 VPN 图标也会一直保留。
+        val hadTun = try {
+            platformInterface?.closeTun() == true
         } catch (e: Exception) {
             Log.e(TAG, "Error closing TUN immediately", e)
+            false
+        }
+        Log.d(TAG, "TUN closed in ${System.currentTimeMillis() - stopStartTime}ms")
+
+        if (hadTun) {
+            forceDeactivateVpnInterface()
+        }
+
+        // 停止状态采集。活动连接必须在核心仍存活时由清理协程按顺序关闭，
+        // 不能另起协程，否则 onDestroy() 取消 serviceScope 后关闭请求会丢失。
+        stopTrafficMonitor()
+
+        try {
+            platformInterface?.prepareForVpnShutdown()
+            Log.d(TAG, "Underlying network detached in ${System.currentTimeMillis() - stopStartTime}ms")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error detaching underlying network", e)
         }
 
         // 立即停止前台服务（在主线程同步执行，不等待协程）
@@ -968,6 +965,35 @@ class BoxVpnService : VpnService() {
         }
     }
 
+    /**
+     * libbox 会复制 Android 返回的 TUN fd。部分旧核心/gVisor 连接关闭后仍可能短暂
+     * 持有该副本，使 Android 继续认为旧 VPN 接口处于活动状态。建立一个无路由的
+     * 临时接口会让系统立即停用旧接口；随后马上关闭临时 fd，完成确定性的 teardown。
+     */
+    private fun forceDeactivateVpnInterface() {
+        val startedAt = System.currentTimeMillis()
+        try {
+            val teardownTun = Builder()
+                .setSession(getString(R.string.app_name))
+                .addAddress("10.255.255.1", 32)
+                .establish()
+
+            if (teardownTun == null) {
+                Log.w(TAG, "Temporary teardown TUN was not established")
+                return
+            }
+            teardownTun.close()
+            Log.d(
+                TAG,
+                "VPN interface force-deactivated in ${System.currentTimeMillis() - startedAt}ms"
+            )
+        } catch (e: Exception) {
+            // 系统撤销 VPN 授权或并发切换其他 VPN 时 establish() 允许失败；
+            // 原有的核心关闭流程仍会继续执行。
+            Log.w(TAG, "Failed to force-deactivate VPN interface", e)
+        }
+    }
+
     private fun pickFreeInternalSocksPort(lanProxy: LanProxyConfig): Int {
         repeat(20) {
             val port = ServerSocket(0).use { it.localPort }
@@ -1057,9 +1083,20 @@ class BoxVpnService : VpnService() {
     private fun cleanupResources() {
         try {
             currentInternalSocksPort = null
-            // 保存引用以便后续清理
-            val pi = platformInterface
-            platformInterface = null
+            // 先原子摘除资源引用，onDestroy 或重复回调只能看到 null，不会并发执行
+            // 第二次核心关闭。平台和核心的实际关闭仍在锁外进行，避免长时间持锁。
+            val resources = synchronized(resourceLock) {
+                commandClientJob?.cancel()
+                commandClientJob = null
+                val captured = Triple(platformInterface, commandServer, commandClient)
+                platformInterface = null
+                commandServer = null
+                commandClient = null
+                captured
+            }
+            val pi = resources.first
+            val server = resources.second
+            val client = resources.third
 
             // 0. 最优先关闭 TUN 接口，确保系统状态栏 VPN 图标立即消失
             try {
@@ -1067,26 +1104,54 @@ class BoxVpnService : VpnService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error closing TUN", e)
             }
-
+            
             // 1. 停止流量监控
             stopTrafficMonitor()
-            stopCommandClient()
 
             // 2. 停止 Network Monitor
             pi?.prepareForVpnShutdown()
 
-            // 3. 停止 CommandServer 和 sing-box 服务
+            // 3. 核心仍存活时先同步关闭活动连接。特别是分应用代理中的浏览器
+            // 长连接，否则异步关闭请求可能被 onDestroy() 取消，gVisor 会继续
+            // 持有 libbox 复制的 TUN fd，导致系统 VPN 图标延迟消失。
+            val connectionsShutdownStartedAt = System.currentTimeMillis()
             try {
-                commandServer?.closeService()
+                client?.closeConnections()
+            } catch (e: Exception) {
+                Log.d(TAG, "Active connection close failed during shutdown", e)
+            } finally {
+                Log.d(
+                    TAG,
+                    "Active connections closed in ${System.currentTimeMillis() - connectionsShutdownStartedAt}ms"
+                )
+            }
+
+            // 4. 关闭 sing-box 服务，释放核心复制的 TUN fd
+            val coreShutdownStartedAt = System.currentTimeMillis()
+            try {
+                server?.closeService()
             } catch (e: Exception) {
                 Log.e(TAG, "Error closing service", e)
+            } finally {
+                val elapsed = System.currentTimeMillis() - coreShutdownStartedAt
+                Log.d(TAG, "sing-box service closed in ${elapsed}ms")
+                if (elapsed >= SLOW_CORE_SHUTDOWN_MS) {
+                    RuntimeLog.warn(TAG, "Slow sing-box shutdown: ${elapsed}ms")
+                }
+            }
+
+            // 5. 服务端关闭后再断开命令通道，避免 closeConnections 与
+            // closeService 并发竞争同一个 CommandServer。
+            try {
+                client?.disconnect()
+            } catch (e: Exception) {
+                Log.d(TAG, "Command client disconnect failed", e)
             }
             try {
-                commandServer?.close()
+                server?.close()
             } catch (e: Exception) {
                 Log.e(TAG, "Error closing commandServer", e)
             }
-            commandServer = null
             deleteLegacyConfigFile()
             
             Log.d(TAG, "Resources cleaned up")
@@ -1096,17 +1161,25 @@ class BoxVpnService : VpnService() {
     }
     
     private suspend fun stopVpnInternal() {
+        var stopFailure: Throwable? = null
         try {
-            finishUsageSession()
+            runCatching { finishUsageSession() }
+                .onFailure { Log.w(TAG, "Failed to finish usage session during VPN shutdown", it) }
             // 切换到 IO 线程执行清理，避免主线程卡顿（如果 cleanup 耗时）
             // 但对于 onDestroy，我们必须同步清理
             withContext(Dispatchers.IO) {
                 cleanupResources()
             }
-            
-            withContext(Dispatchers.Main) {
+
+        } catch (e: Exception) {
+            stopFailure = e
+            Log.e(TAG, "Error stopping VPN", e)
+            RuntimeLog.error(TAG, "Error stopping VPN", e)
+        } finally {
+            // 即使某个原生清理调用抛出异常，也必须结束 DISCONNECTING 状态。
+            withContext(NonCancellable + Dispatchers.Main) {
                 isRunning = false
-                isStopping = false
+                isStopping.set(false)
                 currentNodeName = null
                 uploadSpeed = 0L
                 downloadSpeed = 0L
@@ -1116,16 +1189,11 @@ class BoxVpnService : VpnService() {
                 // 通知UI更新
                 ServiceManager.notifyStateChange()
             }
-            
+        }
+
+        if (stopFailure == null) {
             Log.d(TAG, "VPN stopped")
             RuntimeLog.info(TAG, "VPN stopped")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping VPN", e)
-            RuntimeLog.error(TAG, "Error stopping VPN", e)
-            withContext(Dispatchers.Main) {
-                isStopping = false
-            }
         }
     }
     
@@ -1146,7 +1214,7 @@ class BoxVpnService : VpnService() {
 
         // 更新状态
         isRunning = false
-        isStopping = false
+        isStopping.set(false)
         if (instance == this) {
             instance = null
         }

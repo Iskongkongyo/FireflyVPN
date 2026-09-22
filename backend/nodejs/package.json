@@ -1,0 +1,32 @@
+{
+  "name": "firefly-vpn-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/node/server.ts",
+    "build": "esbuild src/node/server.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist/server.js",
+    "start": "node dist/server.js",
+    "migrate:cloudflare": "tsx scripts/import_cloudflare_backup.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^17.4.2",
+    "hono": "^4.9.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.2",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

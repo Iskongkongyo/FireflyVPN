@@ -414,7 +414,7 @@ fun OtherConfigScreen(
                     onValueChange = { bandwidthTestConcurrencyInput = it.filter(Char::isDigit) }
                 )
                 OtherConfigNumberField(
-                    label = "流媒体测试并发数",
+                    label = "主流站解锁测试并发数",
                     value = unlockTestConcurrencyInput,
                     onValueChange = { unlockTestConcurrencyInput = it.filter(Char::isDigit) }
                 )

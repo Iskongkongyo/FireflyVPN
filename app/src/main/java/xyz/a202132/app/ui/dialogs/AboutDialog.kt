@@ -37,7 +37,6 @@ import xyz.a202132.app.ui.theme.Primary
 @Composable
 fun AboutDialog(
     githubUrl: String,
-    updateCheckAvailable: Boolean,
     onCheckUpdate: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -290,28 +289,26 @@ fun AboutDialog(
 
                     Spacer(modifier = Modifier.height(sectionSpacer))
 
-                    if (updateCheckAvailable) {
-                        OutlinedButton(
-                            onClick = onCheckUpdate,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.SystemUpdate,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = stringResource(R.string.check_update),
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onCheckUpdate,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.SystemUpdate,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.check_update),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Close button
                     Button(

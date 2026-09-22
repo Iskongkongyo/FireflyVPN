@@ -57,6 +57,8 @@
     <string name="cancel">取消</string>
     <string name="close">关闭</string>
     <string name="loading">加载中…</string>
+    <string name="per_app_whitelist_empty">代理模式至少需要选择一个应用，请先选择应用</string>
+    <string name="per_app_whitelist_no_valid_apps">代理模式中没有仍然有效的应用，请重新选择已安装应用</string>
 
     <!-- Rule Management -->
     <string name="rule_management_title">规则管理</string>
@@ -67,7 +69,7 @@
     <string name="rule_system_always_enabled">始终启用</string>
     <string name="rule_enabled">已启用</string>
     <string name="rule_disabled">已停用</string>
-    <string name="rule_reconnect_hint">规则开关将在下次连接 VPN 时生效</string>
+    <string name="rule_reconnect_hint">规则更改将在返回主界面后应用到当前 VPN 连接</string>
     <string name="rule_overlap_warning">同时启用两份广告规则可能产生重复匹配，并增加内存占用。</string>
     <string name="rule_update">更新</string>
     <string name="rule_restore">恢复内置版本</string>
@@ -77,6 +79,7 @@
     <string name="rule_restore_failed">恢复失败，当前版本未受影响</string>
     <string name="rule_toggle_failed">设置保存失败</string>
     <string name="rule_initialize_failed">部分内置规则文件初始化失败</string>
+    <string name="rule_operation_in_progress">规则操作进行中，请稍候</string>
     <string name="rule_stage_checking">检查规则…</string>
     <string name="rule_stage_downloading">下载中…</string>
     <string name="rule_stage_verifying">校验中…</string>

@@ -19,7 +19,7 @@ import java.io.RandomAccessFile
 
 @Database(
     entities = [Node::class, SubscriptionGroup::class, SubscriptionLink::class],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(NodeTypeConverter::class)
@@ -68,7 +68,7 @@ abstract class AppDatabase : RoomDatabase() {
                 DB_NAME
             )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build()
         }
@@ -111,6 +111,25 @@ abstract class AppDatabase : RoomDatabase() {
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE subscription_groups ADD COLUMN userAgent TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE nodes ADD COLUMN downloadTestStatus TEXT NOT NULL DEFAULT 'NOT_TESTED'"
+                )
+                db.execSQL(
+                    "ALTER TABLE nodes ADD COLUMN uploadTestStatus TEXT NOT NULL DEFAULT 'NOT_TESTED'"
+                )
+                db.execSQL("ALTER TABLE nodes ADD COLUMN downloadTestMessage TEXT")
+                db.execSQL("ALTER TABLE nodes ADD COLUMN uploadTestMessage TEXT")
+                db.execSQL(
+                    "UPDATE nodes SET downloadTestStatus = 'SUCCESS' WHERE downloadMbps > 0"
+                )
+                db.execSQL(
+                    "UPDATE nodes SET uploadTestStatus = 'SUCCESS' WHERE uploadMbps > 0"
+                )
             }
         }
 

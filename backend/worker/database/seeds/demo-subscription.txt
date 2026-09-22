@@ -1,0 +1,2 @@
+vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none&security=tls&type=ws#演示节点-不可用
+ss://YWVzLTI1Ni1nY206ZGVtby1vbmx5@example.com:443#演示备用-不可用

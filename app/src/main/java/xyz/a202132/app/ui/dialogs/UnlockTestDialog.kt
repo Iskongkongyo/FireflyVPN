@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,17 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material3.Divider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,8 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.ui.components.NodeIcon
 import xyz.a202132.app.viewmodel.UnlockNodeResult
@@ -103,7 +97,9 @@ internal fun UnlockNodeSelectionPane(
 internal fun UnlockResultPane(
     modifier: Modifier,
     results: List<UnlockNodeResult>,
-    onShowDetail: (title: String, content: String) -> Unit
+    retryEnabled: Boolean,
+    onShowDetail: (UnlockNodeResult, UnlockIpVersion) -> Unit,
+    onRetry: (String) -> Unit
 ) {
     Column(modifier = modifier) {
         Text(
@@ -137,7 +133,9 @@ internal fun UnlockResultPane(
                     items(results, key = { it.nodeId }) { result ->
                         UnlockResultCard(
                             result = result,
-                            onShowDetail = onShowDetail
+                            retryEnabled = retryEnabled,
+                            onShowDetail = onShowDetail,
+                            onRetry = onRetry
                         )
                     }
                 }
@@ -149,7 +147,9 @@ internal fun UnlockResultPane(
 @Composable
 internal fun UnlockResultCard(
     result: UnlockNodeResult,
-    onShowDetail: (title: String, content: String) -> Unit
+    retryEnabled: Boolean,
+    onShowDetail: (UnlockNodeResult, UnlockIpVersion) -> Unit,
+    onRetry: (String) -> Unit
 ) {
     val statusColor = when (result.status) {
         UnlockResultStatus.SUCCESS -> MaterialTheme.colorScheme.primary
@@ -181,19 +181,40 @@ internal fun UnlockResultCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    text = result.status.name,
-                    color = statusColor,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = resultStatusLabel(result.status),
+                        color = statusColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (result.status == UnlockResultStatus.FAILED) {
+                        TextButton(
+                            onClick = { onRetry(result.nodeId) },
+                            enabled = retryEnabled,
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 1.dp)
+                                .height(32.dp),
+                            contentPadding = PaddingValues(
+                                start = 8.dp,
+                                end = 0.dp,
+                                top = 0.dp,
+                                bottom = 0.dp
+                            )
+                        ) {
+                            Text("刷新", fontSize = 12.sp)
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = result.summary,
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
             )
             if (result.testedAt > 0L) {
                 Spacer(modifier = Modifier.height(2.dp))
@@ -204,85 +225,42 @@ internal fun UnlockResultCard(
                 )
             }
 
-            if (result.rawOutput.isNotBlank()) {
+            if (result.rawOutput.isNotBlank() || result.fullOutput.isNotBlank()) {
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "查看解锁信息",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 12.sp,
-                    modifier = Modifier.clickable {
-                        onShowDetail(result.nodeName, buildDetailInfo(result))
-                    }
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "查看IPV4详细测试",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.clickable {
+                            onShowDetail(result, UnlockIpVersion.IPV4)
+                        }
+                    )
+                    Text(
+                        text = "查看IPV6详细测试",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.clickable {
+                            onShowDetail(result, UnlockIpVersion.IPV6)
+                        }
+                    )
+                }
             }
         }
     }
-}
-
-internal fun buildDetailInfo(result: UnlockNodeResult): String {
-    return result.rawOutput.ifBlank { result.summary }
 }
 
 internal fun formatResultTime(timestamp: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
 }
 
-@Composable
-internal fun UnlockResultDetailDialog(
-    title: String,
-    content: String,
-    onDismiss: () -> Unit
-) {
-    val scrollState = rememberScrollState()
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .fillMaxSize(0.8f),
-            shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = title,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "关闭")
-                    }
-                }
-
-                Divider()
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                ) {
-                    Text(
-                        text = content,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
+private fun resultStatusLabel(status: UnlockResultStatus): String = when (status) {
+    UnlockResultStatus.PENDING -> "等待测试"
+    UnlockResultStatus.RUNNING -> "测试中"
+    UnlockResultStatus.SUCCESS -> "已完成"
+    UnlockResultStatus.FAILED -> "失败"
+    UnlockResultStatus.CANCELED -> "已取消"
 }

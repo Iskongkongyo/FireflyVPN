@@ -63,6 +63,8 @@ import xyz.a202132.app.viewmodel.AutoTestLatencyMode
 import xyz.a202132.app.viewmodel.AutoTestConfig
 import xyz.a202132.app.viewmodel.AutoTestStage
 import xyz.a202132.app.viewmodel.BestNodePriority
+import xyz.a202132.app.viewmodel.BestNodeWeights
+import xyz.a202132.app.viewmodel.PreferRankingMode
 import xyz.a202132.app.viewmodel.TestPreferMode
 import xyz.a202132.app.viewmodel.UnlockPriorityMode
 import xyz.a202132.app.viewmodel.normalizePriorityOrder
@@ -110,9 +112,10 @@ fun TestPreferPanelDialog(
     onSetAutoTestNodeLimit: (Int) -> Unit,
     onApplyPreferTestMode: (String) -> Unit,
     onCreatePreferTestMode: () -> Unit,
-    onSaveCurrentPreferTestMode: (String, AutoTestConfig) -> Unit,
+    onSaveCurrentPreferTestMode: (String, AutoTestConfig, TestPreferMode?) -> Unit,
     onDeleteCurrentPreferTestMode: () -> Unit,
     onUpdateCurrentPreferModePriorityOrder: (List<BestNodePriority>) -> Unit,
+    onUpdateCurrentPreferModeRanking: (PreferRankingMode, BestNodeWeights) -> Unit,
     onUpdateCurrentPreferModeUnlockPriority: (UnlockPriorityMode, List<String>) -> Unit,
     onUpdateCurrentPreferModeAutoConnect: (Boolean) -> Unit,
     onShowRecentAutoTestResults: () -> Unit,
@@ -139,6 +142,12 @@ fun TestPreferPanelDialog(
         mutableStateOf(
             currentMode?.normalizePriorityOrder()?.priorityOrder ?: BestNodePriority.entries.toList()
         )
+    }
+    var rankingModeDraft by remember(preferTestSelectedModeId, currentMode?.rankingMode) {
+        mutableStateOf(currentMode?.rankingMode ?: PreferRankingMode.PRIORITY_ORDER)
+    }
+    var priorityWeightsDraft by remember(preferTestSelectedModeId, currentMode?.priorityWeights) {
+        mutableStateOf(currentMode?.priorityWeights?.normalized() ?: BestNodeWeights())
     }
     var unlockPriorityModeDraft by remember(currentMode?.unlockPriorityMode) {
         mutableStateOf(currentMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT)
@@ -169,6 +178,24 @@ fun TestPreferPanelDialog(
         "${priorityOrderText}优先"
     } else {
         priorityOrderText
+    }
+    val activeWeightSum = BestNodePriority.entries
+        .filter { priority ->
+            isPriorityTestEnabled(
+                priority = priority,
+                latencyEnabled = autoTestLatencyEnabled,
+                bandwidthEnabled = autoTestBandwidthEnabled,
+                downloadEnabled = autoTestBandwidthDownloadEnabled,
+                uploadEnabled = autoTestBandwidthUploadEnabled,
+                unlockEnabled = autoTestUnlockEnabled
+            )
+        }
+        .sumOf(priorityWeightsDraft::get)
+    val weightedRankingValid = rankingModeDraft != PreferRankingMode.WEIGHTED_SCORE || activeWeightSum > 0
+    val effectivePriorityLabel = if (rankingModeDraft == PreferRankingMode.WEIGHTED_SCORE) {
+        "综合权重"
+    } else {
+        priorityOrderLabel
     }
     val closeUnlockPriorityPage = {
         unlockPriorityModeDraft = currentMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT
@@ -204,6 +231,8 @@ fun TestPreferPanelDialog(
         currentMode?.copy(
             defaultPriority = priorityOrderDraft.firstOrNull() ?: BestNodePriority.LATENCY,
             priorityOrder = priorityOrderDraft,
+            rankingMode = rankingModeDraft,
+            priorityWeights = priorityWeightsDraft,
             filterUnavailable = autoTestFilterUnavailable,
             latencyEnabled = autoTestLatencyEnabled,
             latencyMode = autoTestLatencyMode,
@@ -224,6 +253,13 @@ fun TestPreferPanelDialog(
             unlockPriorityMode = unlockPriorityModeDraft,
             unlockPriorityTargetSiteIds = unlockTargetSiteIdsDraft.toList(),
             autoConnectBest = autoConnectBest
+        )
+    }
+    val saveCurrentMode = {
+        onSaveCurrentPreferTestMode(
+            modeNameInput,
+            currentPanelConfig(),
+            currentExecutionMode()
         )
     }
 
@@ -258,6 +294,15 @@ fun TestPreferPanelDialog(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    TextButton(
+                        onClick = saveCurrentMode,
+                        enabled = controlsEnabled && modeNameInput.isNotBlank(),
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Text("保存", fontWeight = FontWeight.SemiBold)
                     }
                 }
 
@@ -339,7 +384,7 @@ fun TestPreferPanelDialog(
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
-                                onClick = { onSaveCurrentPreferTestMode(modeNameInput, currentPanelConfig()) },
+                                onClick = saveCurrentMode,
                                 enabled = controlsEnabled && modeNameInput.isNotBlank(),
                                 modifier = Modifier.weight(1f)
                             ) {
@@ -492,7 +537,7 @@ fun TestPreferPanelDialog(
                         )
                         SettingSwitchRow(
                             checked = autoTestUnlockEnabled,
-                            text = "启用流媒体等解锁测试",
+                            text = "启用主流站解锁测试",
                             enabled = controlsEnabled,
                             onCheckedChange = onSetAutoTestUnlockEnabled
                         )
@@ -530,36 +575,100 @@ fun TestPreferPanelDialog(
                         )
 
                         Divider(modifier = Modifier.padding(vertical = 4.dp))
-                        SectionTitle("择优顺序")
-                        Text(
-                            text = "测试结果里的节点将会按下面顺序逐级比较进行排序。",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        SectionTitle("择优方式")
+                        PanelDropdownItem(
+                            title = "排序方式",
+                            currentValue = when (rankingModeDraft) {
+                                PreferRankingMode.PRIORITY_ORDER -> "按优先级"
+                                PreferRankingMode.WEIGHTED_SCORE -> "综合权重"
+                            },
+                            options = listOf(
+                                PreferRankingMode.PRIORITY_ORDER to "按优先级",
+                                PreferRankingMode.WEIGHTED_SCORE to "综合权重"
+                            ),
+                            enabled = controlsEnabled,
+                            onSelect = { rankingMode ->
+                                rankingModeDraft = rankingMode
+                                onUpdateCurrentPreferModeRanking(rankingMode, priorityWeightsDraft)
+                            }
                         )
-                        activePriorityOrder.forEachIndexed { index, priority ->
-                            PriorityOrderItem(
-                                index = index,
-                                label = priorityLabel(priority, unlockPriorityModeDraft),
-                                canMoveUp = controlsEnabled && index > 0,
-                                canMoveDown = controlsEnabled && index < activePriorityOrder.lastIndex,
-                                onMoveUp = {
-                                    priorityOrderDraft = priorityOrderDraft.swapItems(
-                                        priority,
-                                        activePriorityOrder[index - 1]
+                        if (rankingModeDraft == PreferRankingMode.PRIORITY_ORDER) {
+                            Text(
+                                text = "测试结果里的节点将会按下面顺序逐级比较进行排序。",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            activePriorityOrder.forEachIndexed { index, priority ->
+                                PriorityOrderItem(
+                                    index = index,
+                                    label = priorityLabel(priority, unlockPriorityModeDraft),
+                                    canMoveUp = controlsEnabled && index > 0,
+                                    canMoveDown = controlsEnabled && index < activePriorityOrder.lastIndex,
+                                    onMoveUp = {
+                                        priorityOrderDraft = priorityOrderDraft.swapItems(
+                                            priority,
+                                            activePriorityOrder[index - 1]
+                                        )
+                                        onUpdateCurrentPreferModePriorityOrder(priorityOrderDraft)
+                                    },
+                                    onMoveDown = {
+                                        priorityOrderDraft = priorityOrderDraft.swapItems(
+                                            priority,
+                                            activePriorityOrder[index + 1]
+                                        )
+                                        onUpdateCurrentPreferModePriorityOrder(priorityOrderDraft)
+                                    },
+                                    onConfigure = if (priority == BestNodePriority.UNLOCK_COUNT && controlsEnabled) {
+                                        { showUnlockPriorityPage = true }
+                                    } else {
+                                        null
+                                    }
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "权重范围为 0–100，无需相加为 100；权重 0 表示该项不参与排序。",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            BestNodePriority.entries.forEach { priority ->
+                                val metricEnabled = isPriorityTestEnabled(
+                                    priority = priority,
+                                    latencyEnabled = autoTestLatencyEnabled,
+                                    bandwidthEnabled = autoTestBandwidthEnabled,
+                                    downloadEnabled = autoTestBandwidthDownloadEnabled,
+                                    uploadEnabled = autoTestBandwidthUploadEnabled,
+                                    unlockEnabled = autoTestUnlockEnabled
+                                )
+                                if (metricEnabled) {
+                                    PriorityWeightItem(
+                                        label = priorityLabel(priority, unlockPriorityModeDraft),
+                                        value = priorityWeightsDraft.get(priority),
+                                        enabled = controlsEnabled,
+                                        onValueChange = { value ->
+                                            val updatedWeights = priorityWeightsDraft.with(priority, value)
+                                            priorityWeightsDraft = updatedWeights
+                                            onUpdateCurrentPreferModeRanking(rankingModeDraft, updatedWeights)
+                                        },
+                                        onConfigure = if (priority == BestNodePriority.UNLOCK_COUNT && controlsEnabled) {
+                                            { showUnlockPriorityPage = true }
+                                        } else {
+                                            null
+                                        }
                                     )
-                                    onUpdateCurrentPreferModePriorityOrder(priorityOrderDraft)
-                                },
-                                onMoveDown = {
-                                    priorityOrderDraft = priorityOrderDraft.swapItems(
-                                        priority,
-                                        activePriorityOrder[index + 1]
-                                    )
-                                    onUpdateCurrentPreferModePriorityOrder(priorityOrderDraft)
-                                },
-                                onConfigure = if (priority == BestNodePriority.UNLOCK_COUNT && controlsEnabled) {
-                                    { showUnlockPriorityPage = true }
+                                }
+                            }
+                            Text(
+                                text = if (activeWeightSum > 0) {
+                                    "当前有效权重总和：$activeWeightSum"
                                 } else {
-                                    null
+                                    "至少需要一个已启用测试项目的权重大于 0"
+                                },
+                                fontSize = 12.sp,
+                                color = if (activeWeightSum > 0) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.error
                                 }
                             )
                         }
@@ -595,7 +704,7 @@ fun TestPreferPanelDialog(
                                             "当前阶段：${autoTestStageLabel(autoTestProgress.stage)}\n${autoTestProgress.message}"
                                         } else {
                                             if (autoConnectBest) {
-                                                "测试完成后，将按照当前择优顺序自动连接最优节点。"
+                                                "测试完成后，将按照当前${if (rankingModeDraft == PreferRankingMode.WEIGHTED_SCORE) "综合权重" else "择优顺序"}自动连接最优节点。"
                                             } else {
                                                 "点击下方按钮，按照当前面板配置执行测试。"
                                             }
@@ -641,7 +750,7 @@ fun TestPreferPanelDialog(
                                 }
                             },
                             enabled = !canceling && (
-                                autoTestProgress.running || isPanelConfigValid(
+                                autoTestProgress.running || (weightedRankingValid && isPanelConfigValid(
                                     latencyEnabled = autoTestLatencyEnabled,
                                     latencyInput = latencyInput,
                                     bandwidthEnabled = autoTestBandwidthEnabled,
@@ -651,7 +760,7 @@ fun TestPreferPanelDialog(
                                     uploadInput = uploadThresholdInput,
                                     unlockEnabled = autoTestUnlockEnabled,
                                     nodeLimitInput = nodeLimitInput
-                                )
+                                ))
                             ),
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(
@@ -671,8 +780,8 @@ fun TestPreferPanelDialog(
                                 when {
                                     canceling -> "正在取消…"
                                     autoTestProgress.running -> "取消测试"
-                                    priorityOrderLabel.isBlank() -> "开始测试"
-                                    else -> "开始测试 · $priorityOrderLabel"
+                                    effectivePriorityLabel.isBlank() -> "开始测试"
+                                    else -> "开始测试 · $effectivePriorityLabel"
                                 }
                             )
                         }
@@ -869,7 +978,7 @@ private fun autoTestStageLabel(stage: AutoTestStage): String = when (stage) {
     AutoTestStage.FILTER_LATENCY -> "延迟筛选"
     AutoTestStage.BANDWIDTH_TEST -> "带宽测试"
     AutoTestStage.FILTER_BANDWIDTH -> "带宽筛选"
-    AutoTestStage.UNLOCK_TEST -> "解锁测试"
+    AutoTestStage.UNLOCK_TEST -> "主流站解锁测试"
     AutoTestStage.DONE -> "测试完成"
     AutoTestStage.CANCELED -> "正在取消"
     AutoTestStage.FAILED -> "测试失败"
@@ -983,6 +1092,59 @@ private fun PriorityOrderItem(
             ) {
                 Text("下移", fontSize = 12.sp)
             }
+        }
+    }
+}
+
+@Composable
+private fun PriorityWeightItem(
+    label: String,
+    value: Int,
+    enabled: Boolean,
+    onValueChange: (Int) -> Unit,
+    onConfigure: (() -> Unit)?
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.weight(1f),
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                }
+            )
+            if (onConfigure != null) {
+                TextButton(
+                    onClick = onConfigure,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 32.dp)
+                ) {
+                    Text("设置", fontSize = 12.sp)
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedTextField(
+                value = value.toString(),
+                onValueChange = { text ->
+                    val digits = text.filter(Char::isDigit).take(3)
+                    onValueChange((digits.toIntOrNull() ?: 0).coerceIn(0, 100))
+                },
+                modifier = Modifier.width(88.dp),
+                singleLine = true,
+                enabled = enabled,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                label = { Text("权重", fontSize = 12.sp) }
+            )
         }
     }
 }

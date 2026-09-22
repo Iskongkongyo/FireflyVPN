@@ -58,6 +58,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import xyz.a202132.app.ui.components.StartupSplashOverlay
 import xyz.a202132.app.ui.components.NodeListScreen
 import xyz.a202132.app.ui.dialogs.NetworkToolboxScreen
+import xyz.a202132.app.ui.dialogs.UnlockIpVersion
 import xyz.a202132.app.ui.navigation.AppRoute
 import xyz.a202132.app.ui.screens.MainScreen
 import xyz.a202132.app.ui.screens.LanProxyScreen
@@ -66,15 +67,20 @@ import xyz.a202132.app.ui.screens.PerAppProxyScreen
 import xyz.a202132.app.ui.screens.QrScannerScreen
 import xyz.a202132.app.ui.screens.RuntimeLogScreen
 import xyz.a202132.app.ui.screens.AddSubscriptionGroupScreen
+import xyz.a202132.app.ui.screens.AutoTestDetailPage
+import xyz.a202132.app.ui.screens.AutoTestResultsPage
 import xyz.a202132.app.ui.screens.EditSubscriptionGroupScreen
 import xyz.a202132.app.ui.screens.SubscriptionManagementScreen
 import xyz.a202132.app.ui.screens.UnlockTestScreen
+import xyz.a202132.app.ui.screens.UnlockTestDetailPage
+import xyz.a202132.app.ui.screens.UnlockTestResultScreen
 import xyz.a202132.app.rules.ui.RuleDetailScreen
 import xyz.a202132.app.rules.ui.RuleManagementScreen
 import xyz.a202132.app.rules.ui.RuleManagementViewModel
 import xyz.a202132.app.ui.theme.FireflyVPNTheme
 import xyz.a202132.app.viewmodel.MainViewModel
 import xyz.a202132.app.viewmodel.NodeImportResult
+import xyz.a202132.app.viewmodel.UnlockTestViewModel
 
 private const val NODE_LOADING_MESSAGE = "正在后台更新节点，不影响其他操作"
 
@@ -120,6 +126,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val viewModel: MainViewModel = viewModel()
             val ruleViewModel: RuleManagementViewModel = viewModel()
+            val unlockTestViewModel: UnlockTestViewModel = viewModel()
             val appThemeMode by viewModel.appThemeMode.collectAsState()
             val fireflyAccessBanDialogVisible by
                 viewModel.fireflyAccessBanDialogVisible.collectAsState()
@@ -266,7 +273,8 @@ class MainActivity : ComponentActivity() {
                                     onOpenUnlockTest = { navigateTo(AppRoute.UNLOCK_TEST) },
                                     onOpenOtherConfig = { navigateTo(AppRoute.OTHER_CONFIG) },
                                     onOpenLanProxy = { navigateTo(AppRoute.LAN_PROXY) },
-                                    onOpenRuntimeLog = { navigateTo(AppRoute.RUNTIME_LOG) }
+                                    onOpenRuntimeLog = { navigateTo(AppRoute.RUNTIME_LOG) },
+                                    onOpenAutoTestResults = { navigateTo(AppRoute.AUTO_TEST_RESULT) }
                                 )
                             }
 
@@ -314,6 +322,9 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onGroupChange = { viewModel.setSelectedNodeGroup(it) },
                                     onToggleFavorite = { viewModel.toggleFavoriteNode(it) },
+                                    onReorderNodes = { groupId, orderedNodeIds ->
+                                        viewModel.setNodeOrder(groupId, orderedNodeIds)
+                                    },
                                     onSkipFavoriteRemovalConfirmationForSession = {
                                         viewModel.skipFavoriteRemovalConfirmationForSession()
                                     },
@@ -360,7 +371,12 @@ class MainActivity : ComponentActivity() {
                             composable(AppRoute.RULE_MANAGEMENT) {
                                 RuleManagementScreen(
                                     viewModel = ruleViewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = { hasChanges ->
+                                        navController.popBackStack()
+                                        if (hasChanges) {
+                                            viewModel.restartVpnIfNeeded()
+                                        }
+                                    },
                                     onRuleClick = { navigateTo(AppRoute.ruleDetail(it)) }
                                 )
                             }
@@ -400,6 +416,74 @@ class MainActivity : ComponentActivity() {
                             composable(AppRoute.UNLOCK_TEST) {
                                 UnlockTestScreen(
                                     visibleNodes = nodes,
+                                    onBack = { navController.popBackStack() },
+                                    onShowResults = { navigateTo(AppRoute.UNLOCK_TEST_RESULT) },
+                                    viewModel = unlockTestViewModel
+                                )
+                            }
+
+                            composable(AppRoute.UNLOCK_TEST_RESULT) {
+                                UnlockTestResultScreen(
+                                    onBack = { navController.popBackStack() },
+                                    onShowDetail = { nodeId, ipVersion ->
+                                        navigateTo(AppRoute.unlockTestDetail(nodeId, ipVersion.name))
+                                    },
+                                    viewModel = unlockTestViewModel
+                                )
+                            }
+
+                            composable(
+                                route = AppRoute.UNLOCK_TEST_DETAIL,
+                                arguments = listOf(
+                                    navArgument(AppRoute.UNLOCK_TEST_DETAIL_NODE_ARGUMENT) {
+                                        type = NavType.StringType
+                                    },
+                                    navArgument(AppRoute.UNLOCK_TEST_DETAIL_IP_VERSION_ARGUMENT) {
+                                        type = NavType.StringType
+                                    }
+                                )
+                            ) { backStackEntry ->
+                                val ipVersion = when (
+                                    backStackEntry.arguments
+                                        ?.getString(AppRoute.UNLOCK_TEST_DETAIL_IP_VERSION_ARGUMENT)
+                                ) {
+                                    UnlockIpVersion.IPV6.name -> UnlockIpVersion.IPV6
+                                    else -> UnlockIpVersion.IPV4
+                                }
+                                UnlockTestDetailPage(
+                                    nodeId = backStackEntry.arguments
+                                        ?.getString(AppRoute.UNLOCK_TEST_DETAIL_NODE_ARGUMENT)
+                                        .orEmpty(),
+                                    ipVersion = ipVersion,
+                                    onBack = { navController.popBackStack() },
+                                    viewModel = unlockTestViewModel
+                                )
+                            }
+
+                            composable(AppRoute.AUTO_TEST_RESULT) {
+                                AutoTestResultsPage(
+                                    viewModel = viewModel,
+                                    onBack = { navController.popBackStack() },
+                                    onNodeClick = { nodeId ->
+                                        navigateTo(AppRoute.autoTestDetail(nodeId))
+                                    },
+                                    onStartVpn = { action -> requestVpnPermission(action) }
+                                )
+                            }
+
+                            composable(
+                                route = AppRoute.AUTO_TEST_DETAIL,
+                                arguments = listOf(
+                                    navArgument(AppRoute.AUTO_TEST_DETAIL_ARGUMENT) {
+                                        type = NavType.StringType
+                                    }
+                                )
+                            ) { backStackEntry ->
+                                AutoTestDetailPage(
+                                    viewModel = viewModel,
+                                    nodeId = backStackEntry.arguments
+                                        ?.getString(AppRoute.AUTO_TEST_DETAIL_ARGUMENT)
+                                        .orEmpty(),
                                     onBack = { navController.popBackStack() }
                                 )
                             }

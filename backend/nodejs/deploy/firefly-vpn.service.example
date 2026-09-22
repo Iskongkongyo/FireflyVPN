@@ -1,0 +1,25 @@
+[Unit]
+Description=Firefly VPN backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=firefly
+Group=firefly
+WorkingDirectory=/opt/firefly-vpn
+EnvironmentFile=/opt/firefly-vpn/.env
+ExecStart=/usr/bin/node /opt/firefly-vpn/dist/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+# Basic systemd hardening. The app only needs to write its data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/firefly-vpn/data
+
+[Install]
+WantedBy=multi-user.target

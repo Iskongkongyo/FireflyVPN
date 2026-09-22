@@ -11,7 +11,7 @@ import java.net.Socket
 import java.util.UUID
 
 /**
- * 流媒体解锁测试专用的临时无头 sing-box 管理器（单例串行）。
+ * 主流站解锁测试专用的临时无头 sing-box 管理器（单例串行）。
  */
 object UnlockTestManager {
 

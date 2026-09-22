@@ -28,8 +28,6 @@ import xyz.a202132.app.data.model.Node
 import xyz.a202132.app.data.model.VpnState
 import xyz.a202132.app.ui.components.*
 import xyz.a202132.app.ui.dialogs.*
-import xyz.a202132.app.ui.dialogs.AutoTestDetailDialog
-import xyz.a202132.app.ui.dialogs.AutoTestResultDialog
 import xyz.a202132.app.ui.dialogs.SpeedTestDialog
 import xyz.a202132.app.ui.theme.*
 import xyz.a202132.app.viewmodel.AutoTestStage
@@ -37,7 +35,6 @@ import xyz.a202132.app.viewmodel.BestNodePriority
 import xyz.a202132.app.viewmodel.MainViewModel
 import xyz.a202132.app.viewmodel.StartupDefaultTestMode
 import xyz.a202132.app.viewmodel.TestPreferMode
-import xyz.a202132.app.viewmodel.UnlockPriorityMode
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -52,7 +49,8 @@ fun MainScreen(
     onOpenUnlockTest: () -> Unit = {},
     onOpenOtherConfig: () -> Unit = {},
     onOpenLanProxy: () -> Unit = {},
-    onOpenRuntimeLog: () -> Unit = {}
+    onOpenRuntimeLog: () -> Unit = {},
+    onOpenAutoTestResults: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -66,7 +64,6 @@ fun MainScreen(
     val notice by viewModel.notice.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
     val remoteAppSettings by viewModel.remoteAppSettings.collectAsState()
-    val updateCheckAvailable by viewModel.updateCheckAvailable.collectAsState()
     val infoDialogMessage by viewModel.infoDialogMessage.collectAsState()
     val isAutoSelecting by viewModel.isAutoSelecting.collectAsState()
     val isUserAgreementAccepted by viewModel.isUserAgreementAccepted.collectAsState()
@@ -76,8 +73,6 @@ fun MainScreen(
     var showSpeedTestDialog by remember { mutableStateOf(false) }
     var showNodeIpInfoDialog by remember { mutableStateOf(false) }
     var nodeForIpInfo by remember { mutableStateOf<Node?>(null) }
-    var showAutoTestResultDialog by remember { mutableStateOf(false) }
-    var nodeAutoTestDetail by remember { mutableStateOf<Node?>(null) }
     var autoTestWasRunning by remember { mutableStateOf(false) }
     var showQuickModePicker by remember { mutableStateOf(false) }
     var showTestPreferPanelPage by remember { mutableStateOf(false) }
@@ -108,8 +103,6 @@ fun MainScreen(
     val autoTestNodeLimit by viewModel.autoTestNodeLimit.collectAsState()
     val autoTestProgress by viewModel.autoTestProgress.collectAsState()
     val autoTestResultSnapshot by viewModel.autoTestResultSnapshot.collectAsState()
-    val autoTestResultMode by viewModel.autoTestResultMode.collectAsState()
-    val autoTestResultPriority by viewModel.autoTestResultPriority.collectAsState()
     val preferTestModes by viewModel.preferTestModes.collectAsState()
     val preferTestSelectedModeId by viewModel.preferTestSelectedModeId.collectAsState()
     val selectedNodeGroupId by viewModel.selectedNodeGroupId.collectAsState()
@@ -128,7 +121,8 @@ fun MainScreen(
 
     LaunchedEffect(autoTestProgress.running, autoTestProgress.stage) {
         if (autoTestWasRunning && !autoTestProgress.running && autoTestProgress.stage == AutoTestStage.DONE) {
-            showAutoTestResultDialog = true
+            showTestPreferPanelPage = false
+            onOpenAutoTestResults()
         }
         autoTestWasRunning = autoTestProgress.running
     }
@@ -304,17 +298,17 @@ fun MainScreen(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("\uD83C\uDFAC 主流站解锁测试") },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onOpenUnlockTest()
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("\uD83E\uDDF9 隐藏不合格节点") },
                                     onClick = {
                                         showToolsMenu = false
                                         viewModel.cleanUnavailableNodes()
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("\uD83C\uDFAC 流媒体解锁测试") },
-                                    onClick = {
-                                        showToolsMenu = false
-                                        onOpenUnlockTest()
                                     }
                                 )
 
@@ -451,7 +445,6 @@ fun MainScreen(
     if (showAboutDialog) {
         AboutDialog(
             githubUrl = remoteAppSettings.githubUrl.trim(),
-            updateCheckAvailable = updateCheckAvailable,
             onCheckUpdate = {
                 showAboutDialog = false
                 viewModel.checkUpdate()
@@ -462,26 +455,6 @@ fun MainScreen(
     }
     }
     
-    // 节点列表弹窗
-    if (showAutoTestResultDialog) {
-        val qualifiedNodes = autoTestResultSnapshot
-        val resultMode = autoTestResultMode
-        val resultPriority = autoTestResultPriority
-        val autoConnectLabel = "连接推荐节点（${priorityDisplayLabel(resultPriority, resultMode)}）"
-        AutoTestResultDialog(
-            nodes = qualifiedNodes,
-            priority = resultPriority,
-            onDismiss = { showAutoTestResultDialog = false },
-            onNodeClick = { node -> nodeAutoTestDetail = node },
-            autoConnectLabel = autoConnectLabel,
-            onAutoConnectBest = {
-                onStartVpn {
-                    viewModel.selectBestNodeByPriorityFromSnapshot(resultPriority, true, resultMode)
-                }
-            }
-        )
-    }
-
     infoDialogMessage?.let { message ->
         AlertDialog(
             onDismissRequest = { viewModel.clearInfoDialogMessage() },
@@ -551,16 +524,22 @@ fun MainScreen(
             onSetAutoTestNodeLimit = { viewModel.setAutoTestNodeLimit(it) },
             onApplyPreferTestMode = { viewModel.applyPreferTestMode(it) },
             onCreatePreferTestMode = { viewModel.createPreferTestModeFromCurrent() },
-            onSaveCurrentPreferTestMode = { name, config ->
-                viewModel.saveCurrentPreferTestMode(name, config)
+            onSaveCurrentPreferTestMode = { name, config, mode ->
+                viewModel.saveCurrentPreferTestMode(name, config, mode)
             },
             onDeleteCurrentPreferTestMode = { viewModel.deleteCurrentPreferTestMode() },
             onUpdateCurrentPreferModePriorityOrder = { viewModel.updateCurrentPreferModePriorityOrder(it) },
+            onUpdateCurrentPreferModeRanking = { rankingMode, weights ->
+                viewModel.updateCurrentPreferModeRanking(rankingMode, weights)
+            },
             onUpdateCurrentPreferModeUnlockPriority = { mode, siteIds ->
                 viewModel.updateCurrentPreferModeUnlockPriority(mode, siteIds)
             },
             onUpdateCurrentPreferModeAutoConnect = { viewModel.updateCurrentPreferModeAutoConnect(it) },
-            onShowRecentAutoTestResults = { showAutoTestResultDialog = true },
+            onShowRecentAutoTestResults = {
+                showTestPreferPanelPage = false
+                onOpenAutoTestResults()
+            },
             onStartAutomatedTest = { panelConfig, autoConnectBest, modeOverride ->
                 val startTest = {
                     viewModel.startAutomatedTest(
@@ -592,17 +571,6 @@ fun MainScreen(
         )
     }
 
-    nodeAutoTestDetail?.let { node ->
-        AutoTestDetailDialog(
-            node = node,
-            onDismiss = { nodeAutoTestDetail = null },
-            onUseNode = {
-                viewModel.selectNode(node)
-                nodeAutoTestDetail = null
-            }
-        )
-    }
-    
     // 通知弹窗
     notice?.let { noticeInfo ->
         NoticeDialog(
@@ -912,18 +880,6 @@ private fun QuickModePickerDialog(
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
-}
-
-private fun priorityDisplayLabel(priority: BestNodePriority, mode: TestPreferMode?): String {
-    return when (priority) {
-        BestNodePriority.LATENCY -> "延迟优先"
-        BestNodePriority.UPLOAD -> "上行优先"
-        BestNodePriority.DOWNLOAD -> "下行优先"
-        BestNodePriority.UNLOCK_COUNT -> when (mode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT) {
-            UnlockPriorityMode.COUNT -> "按解锁数优选"
-            UnlockPriorityMode.TARGET_SITES -> "按指定网站优选"
-        }
-    }
 }
 
 @Composable

@@ -49,9 +49,11 @@ import xyz.a202132.app.util.UnlockTestsRunner
 import xyz.a202132.app.util.LegacyRawLinkMigrationCrypto
 import java.io.File
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 import java.util.UUID
@@ -91,6 +93,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val result: Result<NodeIpInfo>,
         val shouldRetry: Boolean
     )
+
+    private data class BandwidthMeasurement(
+        val mbps: Float = 0f,
+        val status: BandwidthTestStatus,
+        val message: String? = null
+    )
     
     // 节流控制
     private val THROTTLE_INTERVAL = 5000L // 5秒节流间隔
@@ -127,8 +135,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val updateInfo = _updateInfo.asStateFlow()
     private val _remoteAppSettings = MutableStateFlow(RemoteAppSettings())
     val remoteAppSettings = _remoteAppSettings.asStateFlow()
-    private val _updateCheckAvailable = MutableStateFlow(false)
-    val updateCheckAvailable = _updateCheckAvailable.asStateFlow()
     private var cachedClientCatalog: ClientCatalogInfo? = null
     private var cachedClientCatalogAt = 0L
     private val _startupUpdateCheckCompleted =
@@ -164,6 +170,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val autoTestResultMode = _autoTestResultMode.asStateFlow()
     private val _autoTestResultPriority = MutableStateFlow(BestNodePriority.LATENCY)
     val autoTestResultPriority = _autoTestResultPriority.asStateFlow()
+    private val _autoTestWeightedScores = MutableStateFlow<Map<String, WeightedNodeScore>>(emptyMap())
+    val autoTestWeightedScores = _autoTestWeightedScores.asStateFlow()
     private var autoTestJob: Job? = null
     
     val selectedNodeGroupId = settingsRepository.selectedNodeGroupId.stateIn(
@@ -225,7 +233,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _filterUnavailable
     ) { list, filterOut ->
         sortNodesForList(list, filterOut)
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Data
     val nodes = combine(
@@ -677,7 +687,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sortOrder = sortOrder
                     )
                 }
-
                 nodeDao.replaceSubscriptionNodes(group.id, fetchedNodes)
                 subscriptionDao.updateRefreshResult(
                     group.id,
@@ -773,6 +782,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var successfulGroups = 0
         var failedGroups = 0
         var totalNodes = 0
+        val updatedGroups = mutableListOf<SubscriptionGroup>()
         val refreshedNodes = mutableMapOf<String, List<Node>>()
         val failedGroupNames = mutableListOf<String>()
 
@@ -800,7 +810,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sortOrder = sortOrder,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis()
             )
-            subscriptionDao.insertGroup(group)
+            updatedGroups += group
 
             if (parsedNodes != null) {
                 val nodesForGroup = parsedNodes.mapIndexed { nodeIndex, node ->
@@ -813,7 +823,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sortOrder = nodeIndex
                     )
                 }
-                nodeDao.replaceSubscriptionNodes(groupId, nodesForGroup)
                 refreshedNodes[groupId] = nodesForGroup
                 successfulGroups++
                 totalNodes += nodesForGroup.size
@@ -829,27 +838,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .toSet()
         val selectedNodeBeforeCleanup = settingsRepository.selectedNodeId.first()
             ?.let { nodeDao.getNodeById(it) }
-        staleBuiltInGroupIds.forEach { staleId -> subscriptionDao.deleteGroup(staleId) }
+        subscriptionDao.replaceBuiltInCatalog(
+            groups = updatedGroups,
+            refreshedGroupIds = refreshedNodes.keys.toList(),
+            nodes = refreshedNodes.values.flatten(),
+            staleGroupIds = staleBuiltInGroupIds.toList()
+        )
         if (selectedNodeBeforeCleanup?.subscriptionGroupId in staleBuiltInGroupIds) {
             settingsRepository.setSelectedNodeId(null)
         }
 
         val currentSelectedGroupId = settingsRepository.selectedNodeGroupId.first()
-        val selectedCatalogGroupId = when {
-            requestedGroupId in catalogGroupIds -> requestedGroupId
-            currentSelectedGroupId in catalogGroupIds -> currentSelectedGroupId
-            else -> catalogGroupIds.firstOrNull()
+        val remainingGroups = subscriptionDao.getGroupsOnce()
+        val remainingGroupIds = remainingGroups.mapTo(mutableSetOf()) { it.id }
+        val currentGroupStillExists = currentSelectedGroupId == FAVORITES_NODE_GROUP_ID ||
+            currentSelectedGroupId in remainingGroupIds
+        val resolvedSelectedGroupId = if (currentGroupStillExists) {
+            currentSelectedGroupId
+        } else {
+            when {
+                requestedGroupId in remainingGroupIds -> requestedGroupId
+                catalogGroupIds.isNotEmpty() -> catalogGroupIds.first()
+                remainingGroups.isNotEmpty() -> remainingGroups.first().id
+                else -> FAVORITES_NODE_GROUP_ID
+            }
         }
-        if (isBuiltInSubscriptionGroup(currentSelectedGroupId) &&
-            currentSelectedGroupId != selectedCatalogGroupId
-        ) {
-            val fallback = selectedCatalogGroupId
-                ?: subscriptionDao.getGroupsOnce().firstOrNull { !isBuiltInSubscriptionGroup(it.id) }?.id
-                ?: FAVORITES_NODE_GROUP_ID
-            settingsRepository.setSelectedNodeGroupId(fallback)
+        if (currentSelectedGroupId != resolvedSelectedGroupId) {
+            settingsRepository.setSelectedNodeGroupId(resolvedSelectedGroupId)
         }
 
-        selectedCatalogGroupId?.let { selectedId ->
+        resolvedSelectedGroupId.takeIf { it in catalogGroupIds }?.let { selectedId ->
             val selectedNodes = refreshedNodes[selectedId]
                 ?: nodeDao.getSubscriptionNodes(selectedId).first()
             lastFetchedNodes = selectedNodes
@@ -892,12 +910,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _error.value = GlobalTestExecution.busyHint()
                 return@launch
             }
+            // “隐藏不合格节点”只作用于上一轮结果；新一轮测试应重新展示并测试完整分组。
+            _filterUnavailable.value = false
             _isTesting.value = true
-            _testingLabel.value = "TCPing 测试中..."
+            _testingLabel.value = "TCPing"
             try {
                 val currentNodes = targetNodes ?: currentNodeListSnapshot()
+                _testingLabel.value = "TCPing(0/${currentNodes.size})"
                 internalTestNodes(currentNodes) { completed, total ->
-                    _testingLabel.value = "TCPing 测试中 ($completed/$total)"
+                    _testingLabel.value = "TCPing($completed/$total)"
                 }
             } finally {
                 _isTesting.value = false
@@ -936,8 +957,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 locked = true
             }
+            // 避免上一轮手动隐藏状态跟随测试结果更新，继续自动隐藏本轮不合格节点。
+            _filterUnavailable.value = false
             _isTesting.value = true
-            _testingLabel.value = "URL Test 测试中..."
+            _testingLabel.value = "URL Test"
             
             val isVpnRunning = vpnState.value == VpnState.CONNECTED
             val clashApiPort: Int
@@ -945,6 +968,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             try {
                 val currentNodes = targetNodes ?: currentNodeListSnapshot()
+                _testingLabel.value = "URL Test(0/${currentNodes.size})"
                 if (currentNodes.isEmpty()) {
                     _error.value = "没有可用节点"
                     return@launch
@@ -1000,7 +1024,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         return@launch
                     }
                     
-                    _testingLabel.value = "URL Test 测试中..."
+                    _testingLabel.value = "URL Test(0/${currentNodes.size})"
                 }
                 
                 // 诊断：查询 ClashAPI 注册的代理
@@ -1020,7 +1044,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     timeoutMs = urlTestTimeoutMs.value,
                     concurrency = urlTestConcurrency.value
                 ) { completed, total ->
-                    _testingLabel.value = "URL Test 测试中 ($completed/$total)"
+                    _testingLabel.value = "URL Test($completed/$total)"
                     onProgress?.invoke(completed, total)
                 }
                 Log.d(tag, "Got ${results.size} URL test results")
@@ -1263,9 +1287,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun sortNodesForList(list: List<Node>, filterOut: Boolean): List<Node> {
         val filtered = if (filterOut) list.filterNot { shouldHideByQuickCleanup(it) } else list
         return filtered.sortedWith(
-            compareByDescending<Node> { it.isAvailable }
-                .thenBy { it.sortOrder }
-                .thenBy { if (it.latency >= 0) it.latency else Int.MAX_VALUE }
+            compareBy<Node> { it.sortOrder }
+                .thenBy { it.favoriteCreatedAt }
+                .thenBy { it.id }
         )
     }
 
@@ -1411,14 +1435,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _error.value = "当前模式不存在，请重新选择模式"
                 return@launch
             }
-            if (!isPrioritySupportedByMode(priority, currentMode)) {
-                _infoDialogMessage.value = "当前模式未启用${priorityDisplayName(priority)}相关测试。\n\n请先调整模式配置或重新执行测试。"
-                return@launch
-            }
-
             val snapshotNodes = autoTestResultSnapshot.value
             if (snapshotNodes.isEmpty()) {
                 _error.value = "当前没有可用的自动化测试结果快照，请先执行一次测试"
+                return@launch
+            }
+            if (currentMode.rankingMode == PreferRankingMode.WEIGHTED_SCORE) {
+                val priorityOrder = resolvePriorityOrder(currentMode, null)
+                val ranked = rankNodesForMode(snapshotNodes, priorityOrder, currentMode)
+                if (ranked.weightedScores.isEmpty()) {
+                    _infoDialogMessage.value = "快照中没有可用于综合权重计算的测试数据，请重新执行测试。"
+                    return@launch
+                }
+                _autoTestResultMode.value = currentMode
+                _autoTestResultSnapshot.value = ranked.nodes
+                _autoTestWeightedScores.value = ranked.weightedScores
+                val best = ranked.nodes.firstOrNull { it.isAvailable }
+                if (best == null) {
+                    _error.value = "快照中没有可用于综合权重择优的节点"
+                    return@launch
+                }
+                settingsRepository.setSelectedNodeId(best.id)
+                if (connect) {
+                    ServiceManager.startVpn(getApplication(), best, proxyMode.value)
+                }
+                _error.value = if (connect) {
+                    "已按综合权重连接最优节点：${best.getDisplayName()}"
+                } else {
+                    "已按综合权重选择最优节点：${best.getDisplayName()}"
+                }
+                return@launch
+            }
+            if (!isPrioritySupportedByMode(priority, currentMode)) {
+                _infoDialogMessage.value = "当前模式未启用${priorityDisplayName(priority)}相关测试。\n\n请先调整模式配置或重新执行测试。"
                 return@launch
             }
 
@@ -1431,6 +1480,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _autoTestResultMode.value = resultMode
             _autoTestResultPriority.value = priority
             _autoTestResultSnapshot.value = sortNodesForSnapshot(snapshotNodes, priority, resultMode)
+            _autoTestWeightedScores.value = emptyMap()
 
             val candidates = snapshotNodes
                 .filter { it.isAvailable }
@@ -1525,8 +1575,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSelectedNodeGroup(groupId: String) {
+        // Pager 的旧页面可能在目录刷新完成的同一帧发出回调；禁止把后端已删除的
+        // 分组 ID 写回 DataStore，否则外部选中状态与新页码会再次互相校准。
+        if (nodeGroups.value.none { it.id == groupId }) return
         viewModelScope.launch {
-            settingsRepository.setSelectedNodeGroupId(groupId)
+            if (nodeGroups.value.any { it.id == groupId }) {
+                settingsRepository.setSelectedNodeGroupId(groupId)
+            }
         }
     }
 
@@ -1726,6 +1781,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setNodeOrder(groupId: String, orderedVisibleNodeIds: List<String>) {
+        if (orderedVisibleNodeIds.size < 2) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val groupNodes = nodeDao.getAllNodes().first().filter { node ->
+                    if (groupId == FAVORITES_NODE_GROUP_ID) {
+                        node.source == NodeSource.FAVORITE
+                    } else {
+                        node.source == NodeSource.SUBSCRIPTION && node.subscriptionGroupId == groupId
+                    }
+                }
+                val reordered = applyVisibleNodeOrder(groupNodes, orderedVisibleNodeIds)
+                nodeDao.updateSortOrders(reordered)
+            }.onFailure { error ->
+                Log.e(tag, "Failed to persist node order for group=$groupId", error)
+                _error.value = "节点排序保存失败，请重试"
+            }
+        }
+    }
+
     fun skipFavoriteRemovalConfirmationForSession() {
         _skipFavoriteRemovalConfirmation.value = true
     }
@@ -1794,6 +1869,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastTestedAt = 0L,
                         downloadMbps = 0f,
                         uploadMbps = 0f,
+                        downloadTestStatus = BandwidthTestStatus.NOT_TESTED,
+                        uploadTestStatus = BandwidthTestStatus.NOT_TESTED,
+                        downloadTestMessage = null,
+                        uploadTestMessage = null,
                         unlockSummary = "",
                         unlockPassed = false,
                         autoTestStatus = "",
@@ -2050,7 +2129,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyRemoteCatalog(catalog: ClientCatalogInfo) {
         _remoteAppSettings.value = catalog.settings ?: RemoteAppSettings()
-        _updateCheckAvailable.value = catalog.appUpdate != null
     }
 
     private suspend fun fetchClientCatalog(useRecentCache: Boolean): Result<ClientCatalogInfo> {
@@ -2251,6 +2329,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 node.source == NodeSource.SUBSCRIPTION &&
                     node.subscriptionGroupId?.let(::isBuiltInSubscriptionGroup) == true
             }
+            val remainingResultIds = _autoTestResultSnapshot.value.mapTo(hashSetOf()) { it.id }
+            _autoTestWeightedScores.value = _autoTestWeightedScores.value.filterKeys { it in remainingResultIds }
             RuntimeLog.warn(tag, "Firefly access banned; local built-in subscription groups removed ($errorCode)")
         } catch (error: Exception) {
             Log.e(tag, "Failed to clear built-in subscription data after access ban", error)
@@ -2268,6 +2348,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun invalidateAutoTestResults() {
         _autoTestResultSnapshot.value = emptyList()
         _autoTestResultMode.value = null
+        _autoTestWeightedScores.value = emptyMap()
     }
 
     fun setAutoTestEnabled(enabled: Boolean) {
@@ -2365,7 +2446,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsRepository.applyPreferTestMode(mode)
     }
 
-    fun saveCurrentPreferTestMode(name: String, configOverride: AutoTestConfig? = null) {
+    fun saveCurrentPreferTestMode(
+        name: String,
+        configOverride: AutoTestConfig? = null,
+        modeOverride: TestPreferMode? = null
+    ) {
         val trimmed = name.trim()
         if (trimmed.isBlank()) {
             _error.value = "模式名称不能为空"
@@ -2376,6 +2461,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val existing = preferTestModes.value
             val selectedId = preferTestSelectedModeId.value
             val selectedMode = existing.firstOrNull { it.id == selectedId }
+            val rankingSource = modeOverride ?: selectedMode
             val savingBuiltIn = selectedMode?.builtIn == true
             val modeId = selectedMode?.id ?: "custom_${UUID.randomUUID()}"
             val modeName = if (savingBuiltIn) selectedMode?.name ?: trimmed else trimmed
@@ -2398,12 +2484,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 unlockEnabled = config.unlockEnabled,
                 byRegion = config.byRegion,
                 nodeLimit = config.nodeLimit,
-                defaultPriority = selectedMode?.defaultPriority ?: BestNodePriority.LATENCY,
-                priorityOrder = selectedMode?.normalizePriorityOrder()?.priorityOrder
+                defaultPriority = rankingSource?.defaultPriority ?: BestNodePriority.LATENCY,
+                priorityOrder = rankingSource?.normalizePriorityOrder()?.priorityOrder
                     ?: BestNodePriority.entries.toList(),
-                unlockPriorityMode = selectedMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
-                unlockPriorityTargetSiteIds = selectedMode?.unlockPriorityTargetSiteIds ?: emptyList(),
-                autoConnectBest = selectedMode?.autoConnectBest ?: false
+                rankingMode = rankingSource?.rankingMode ?: PreferRankingMode.PRIORITY_ORDER,
+                priorityWeights = rankingSource?.priorityWeights ?: BestNodeWeights(),
+                unlockPriorityMode = rankingSource?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
+                unlockPriorityTargetSiteIds = rankingSource?.unlockPriorityTargetSiteIds ?: emptyList(),
+                autoConnectBest = rankingSource?.autoConnectBest ?: false
             )
             val updated = existing.filterNot { it.id == modeId || (!it.builtIn && it.name == modeName) } + newMode
             settingsRepository.setPreferTestModes(updated)
@@ -2448,6 +2536,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 defaultPriority = currentMode?.defaultPriority ?: BestNodePriority.LATENCY,
                 priorityOrder = currentMode?.normalizePriorityOrder()?.priorityOrder
                     ?: BestNodePriority.entries.toList(),
+                rankingMode = currentMode?.rankingMode ?: PreferRankingMode.PRIORITY_ORDER,
+                priorityWeights = currentMode?.priorityWeights ?: BestNodeWeights(),
                 unlockPriorityMode = currentMode?.unlockPriorityMode ?: UnlockPriorityMode.COUNT,
                 unlockPriorityTargetSiteIds = currentMode?.unlockPriorityTargetSiteIds ?: emptyList(),
                 autoConnectBest = currentMode?.autoConnectBest ?: false
@@ -2504,6 +2594,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val updatedMode = target.copy(
                 defaultPriority = normalizedOrder.first(),
                 priorityOrder = normalizedOrder
+            )
+            val updated = existing.map { if (it.id == currentId) updatedMode else it }
+            settingsRepository.setPreferTestModes(updated)
+        }
+    }
+
+    fun updateCurrentPreferModeRanking(
+        rankingMode: PreferRankingMode,
+        priorityWeights: BestNodeWeights
+    ) {
+        viewModelScope.launch {
+            val currentId = preferTestSelectedModeId.value
+            val existing = preferTestModes.value
+            val target = existing.firstOrNull { it.id == currentId } ?: return@launch
+            val updatedMode = target.copy(
+                rankingMode = rankingMode,
+                priorityWeights = priorityWeights.normalized()
             )
             val updated = existing.map { if (it.id == currentId) updatedMode else it }
             settingsRepository.setPreferTestModes(updated)
@@ -2568,8 +2675,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val selectedModeForRun = modeOverride
                 ?: preferTestModes.value.firstOrNull { it.id == preferTestSelectedModeId.value }
             val modeForRun = selectedModeForRun?.withAutoTestConfig(config)
+            if (
+                modeForRun?.rankingMode == PreferRankingMode.WEIGHTED_SCORE &&
+                BestNodePriority.entries
+                    .filter(modeForRun::supportsPriority)
+                    .sumOf(modeForRun.priorityWeights::get) <= 0
+            ) {
+                _error.value = "综合权重模式至少需要一个已启用测试项目的权重大于 0"
+                _isAutoSelecting.value = false
+                return@launch
+            }
             _autoTestResultSnapshot.value = emptyList()
             _autoTestResultMode.value = null
+            _autoTestWeightedScores.value = emptyMap()
             if (GlobalTestExecution.isFetching()) {
                 _error.value = GlobalTestExecution.fetchingHint()
                 _isAutoSelecting.value = false
@@ -2615,6 +2733,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     node.copy(
                         downloadMbps = 0f,
                         uploadMbps = 0f,
+                        downloadTestStatus = BandwidthTestStatus.NOT_TESTED,
+                        uploadTestStatus = BandwidthTestStatus.NOT_TESTED,
+                        downloadTestMessage = null,
+                        uploadTestMessage = null,
                         unlockSummary = "",
                         unlockPassed = false,
                         autoTestStatus = "",
@@ -2752,14 +2874,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             completed = completedBandwidthNodes.get(),
                                             total = totalBandwidthNodes
                                         )
-                                        val downloadMbps = if (config.bandwidthDownloadEnabled) {
+                                        val downloadResult = if (config.bandwidthDownloadEnabled) {
                                             testNodeDownloadBandwidthMbps(node, config.bandwidthDownloadSizeMb)
-                                        } else 0f
-                                        val uploadMbps = if (config.bandwidthUploadEnabled) {
+                                        } else {
+                                            BandwidthMeasurement(
+                                                status = BandwidthTestStatus.NOT_TESTED,
+                                                message = "本次未启用下行测试"
+                                            )
+                                        }
+                                        val uploadResult = if (config.bandwidthUploadEnabled) {
                                             testNodeUploadBandwidthMbps(node, config.bandwidthUploadSizeMb)
-                                        } else 0f
+                                        } else {
+                                            BandwidthMeasurement(
+                                                status = BandwidthTestStatus.NOT_TESTED,
+                                                message = "本次未启用上行测试"
+                                            )
+                                        }
                                         val testedAt = System.currentTimeMillis()
-                                        nodeDao.updateBandwidth(node.id, downloadMbps, uploadMbps, testedAt)
+                                        nodeDao.updateBandwidth(
+                                            nodeId = node.id,
+                                            downloadMbps = downloadResult.mbps,
+                                            uploadMbps = uploadResult.mbps,
+                                            downloadStatus = downloadResult.status,
+                                            uploadStatus = uploadResult.status,
+                                            downloadMessage = downloadResult.message,
+                                            uploadMessage = uploadResult.message,
+                                            testedAt = testedAt
+                                        )
                                         val completed = completedBandwidthNodes.incrementAndGet()
                                         _autoTestProgress.value = AutoTestProgress(
                                             running = true,
@@ -2769,8 +2910,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             total = totalBandwidthNodes
                                         )
                                         node.copy(
-                                            downloadMbps = downloadMbps,
-                                            uploadMbps = uploadMbps,
+                                            downloadMbps = downloadResult.mbps,
+                                            uploadMbps = uploadResult.mbps,
+                                            downloadTestStatus = downloadResult.status,
+                                            uploadTestStatus = uploadResult.status,
+                                            downloadTestMessage = downloadResult.message,
+                                            uploadTestMessage = uploadResult.message,
                                             autoTestedAt = testedAt
                                         )
                                     }
@@ -2824,12 +2969,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     if (!wifiAllowed || (!config.bandwidthDownloadEnabled && !config.bandwidthUploadEnabled)) {
                         workingNodes = workingNodes.map { node ->
-                            nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "BANDWIDTH_SKIPPED", System.currentTimeMillis())
+                            val skipReason = if (!wifiAllowed) {
+                                "当前不是 Wi-Fi 网络"
+                            } else {
+                                "本次未选择带宽测试方向"
+                            }
+                            val downloadStatus = if (config.bandwidthDownloadEnabled) {
+                                BandwidthTestStatus.SKIPPED
+                            } else {
+                                BandwidthTestStatus.NOT_TESTED
+                            }
+                            val uploadStatus = if (config.bandwidthUploadEnabled) {
+                                BandwidthTestStatus.SKIPPED
+                            } else {
+                                BandwidthTestStatus.NOT_TESTED
+                            }
+                            val testedAt = System.currentTimeMillis()
+                            nodeDao.updateBandwidth(
+                                nodeId = node.id,
+                                downloadMbps = 0f,
+                                uploadMbps = 0f,
+                                downloadStatus = downloadStatus,
+                                uploadStatus = uploadStatus,
+                                downloadMessage = skipReason.takeIf { config.bandwidthDownloadEnabled },
+                                uploadMessage = skipReason.takeIf { config.bandwidthUploadEnabled },
+                                testedAt = testedAt
+                            )
+                            nodeDao.updateAutoTestStatus(node.id, node.isAvailable, "BANDWIDTH_SKIPPED", testedAt)
                             node.copy(
                                 downloadMbps = 0f,
                                 uploadMbps = 0f,
+                                downloadTestStatus = downloadStatus,
+                                uploadTestStatus = uploadStatus,
+                                downloadTestMessage = skipReason.takeIf { config.bandwidthDownloadEnabled },
+                                uploadTestMessage = skipReason.takeIf { config.bandwidthUploadEnabled },
                                 autoTestStatus = "BANDWIDTH_SKIPPED",
-                                autoTestedAt = System.currentTimeMillis()
+                                autoTestedAt = testedAt
                             )
                         }
                     }
@@ -2840,7 +3015,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _autoTestProgress.value = AutoTestProgress(
                         running = true,
                         stage = AutoTestStage.UNLOCK_TEST,
-                        message = "流媒体解锁测试中（并发 $unlockConcurrency）...",
+                        message = "主流站解锁测试中（并发 $unlockConcurrency）...",
                         total = workingNodes.size
                     )
 
@@ -2870,7 +3045,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     _autoTestProgress.value = AutoTestProgress(
                                         running = true,
                                         stage = AutoTestStage.UNLOCK_TEST,
-                                        message = "流媒体解锁测试中（并发 $unlockConcurrency）...",
+                                        message = "主流站解锁测试中（并发 $unlockConcurrency）...",
                                         completed = done,
                                         total = total
                                     )
@@ -2902,26 +3077,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val priorityOrder = resolvePriorityOrder(modeForRun, preferPriority)
                 val snapshotPriority = priorityOrder.first()
-                val sortedSnapshot = sortNodesForSnapshotByOrder(
+                val rankedSnapshot = rankNodesForMode(
                     nodes = workingNodes,
                     priorityOrder = priorityOrder,
                     mode = modeForRun
                 )
-                _autoTestResultSnapshot.value = sortedSnapshot.map { it.copy() }
+                _autoTestResultSnapshot.value = rankedSnapshot.nodes.map { it.copy() }
                 _autoTestResultMode.value = modeForRun
                 _autoTestResultPriority.value = snapshotPriority
+                _autoTestWeightedScores.value = rankedSnapshot.weightedScores
+                val ignoredWeightLabel = rankedSnapshot.ignoredPriorities
+                    .joinToString("、", transform = ::priorityDisplayName)
+                val completionMessage = if (ignoredWeightLabel.isBlank()) {
+                    "完成：保留 ${workingNodes.size} 个节点"
+                } else {
+                    "完成：保留 ${workingNodes.size} 个节点；$ignoredWeightLabel 无有效数据，已忽略对应权重"
+                }
                 _autoTestProgress.value = AutoTestProgress(
                     running = false,
                     stage = AutoTestStage.DONE,
-                    message = "完成：保留 ${workingNodes.size} 个节点",
+                    message = completionMessage,
                     completed = initialSelectedCount,
                     total = initialSelectedCount
                 )
                 RuntimeLog.info(tag, "Automated test completed: kept=${workingNodes.size}, selected=$initialSelectedCount")
 
                 if (preferPriority != null) {
-                    val finalCandidates = workingNodes.filter { it.isAvailable }
-                    val bestNode = pickBestNodeByOrder(finalCandidates, priorityOrder, modeForRun)
+                    val bestNode = if (modeForRun?.rankingMode == PreferRankingMode.WEIGHTED_SCORE) {
+                        rankedSnapshot
+                            .takeIf { it.weightedScores.isNotEmpty() }
+                            ?.nodes
+                            ?.firstOrNull { it.isAvailable }
+                    } else {
+                        val finalCandidates = workingNodes.filter { it.isAvailable }
+                        pickBestNodeByOrder(finalCandidates, priorityOrder, modeForRun)
+                    }
                     if (bestNode != null) {
                         settingsRepository.setSelectedNodeId(bestNode.id)
                         if (connectBestAfterDone) {
@@ -3278,46 +3468,106 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return error is IOException // 涵盖 SocketTimeoutException、InterruptedIOException 等
     }
 
-    private suspend fun testNodeDownloadBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
+    private suspend fun testNodeDownloadBandwidthMbps(
+        node: Node,
+        sizeMb: Int
+    ): BandwidthMeasurement = withContext(Dispatchers.IO) {
         val port = pickFreePort()
         val session = UnlockTestManager.createSession(getApplication(), node, port)
         val started = session.start()
-        if (!started) return@withContext 0f
+        if (!started) {
+            RuntimeLog.warn(tag, "Download bandwidth proxy failed to start: ${node.getDisplayName()}")
+            return@withContext BandwidthMeasurement(
+                status = BandwidthTestStatus.PROXY_START_FAILED,
+                message = "节点测试代理启动失败"
+            )
+        }
 
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
             val bytes = sizeMb.toLong() * 1_000_000L
-            SpeedTestService(
+            val result = SpeedTestService(
                 downloadTimeoutMs = speedTestDownloadTimeoutMs.value,
                 proxy = proxy
-            ).startDownloadTest(bytes) { _, _ -> }.avgSpeedMbps
+            ).startDownloadTest(bytes) { _, _ -> }
+            if (result.avgSpeedMbps > 0f && result.totalBytes > 0L) {
+                BandwidthMeasurement(
+                    mbps = result.avgSpeedMbps,
+                    status = BandwidthTestStatus.SUCCESS
+                )
+            } else {
+                BandwidthMeasurement(
+                    status = BandwidthTestStatus.REQUEST_FAILED,
+                    message = "测速服务未返回有效下行数据"
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(tag, "Download bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
-            0f
+            RuntimeLog.warn(tag, "Download bandwidth test failed: ${node.getDisplayName()}", e)
+            bandwidthFailure(e)
         } finally {
             session.stop()
         }
     }
 
-    private suspend fun testNodeUploadBandwidthMbps(node: Node, sizeMb: Int): Float = withContext(Dispatchers.IO) {
+    private suspend fun testNodeUploadBandwidthMbps(
+        node: Node,
+        sizeMb: Int
+    ): BandwidthMeasurement = withContext(Dispatchers.IO) {
         val port = pickFreePort()
         val session = UnlockTestManager.createSession(getApplication(), node, port)
         val started = session.start()
-        if (!started) return@withContext 0f
+        if (!started) {
+            RuntimeLog.warn(tag, "Upload bandwidth proxy failed to start: ${node.getDisplayName()}")
+            return@withContext BandwidthMeasurement(
+                status = BandwidthTestStatus.PROXY_START_FAILED,
+                message = "节点测试代理启动失败"
+            )
+        }
 
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
             val bytes = sizeMb.toLong() * 1_000_000L
-            SpeedTestService(
+            val result = SpeedTestService(
                 uploadTimeoutMs = AppConfig.AUTO_TEST_BANDWIDTH_UPLOAD_TIMEOUT_MS,
                 proxy = proxy
-            ).startUploadTest(bytes) { _, _ -> }.avgSpeedMbps
+            ).startUploadTest(bytes) { _, _ -> }
+            if (result.avgSpeedMbps > 0f && result.totalBytes > 0L) {
+                BandwidthMeasurement(
+                    mbps = result.avgSpeedMbps,
+                    status = BandwidthTestStatus.SUCCESS
+                )
+            } else {
+                BandwidthMeasurement(
+                    status = BandwidthTestStatus.REQUEST_FAILED,
+                    message = "测速服务未返回有效上行数据"
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(tag, "Upload bandwidth test failed for ${node.getDisplayName()}: ${e.message}")
-            0f
+            RuntimeLog.warn(tag, "Upload bandwidth test failed: ${node.getDisplayName()}", e)
+            bandwidthFailure(e)
         } finally {
             session.stop()
         }
+    }
+
+    private fun bandwidthFailure(error: Exception): BandwidthMeasurement {
+        val isTimeout = error is SocketTimeoutException ||
+            (error is InterruptedIOException && error.message?.contains("timeout", ignoreCase = true) == true)
+        return BandwidthMeasurement(
+            status = if (isTimeout) BandwidthTestStatus.TIMEOUT else BandwidthTestStatus.REQUEST_FAILED,
+            message = error.message
+                ?.replace(Regex("\\s+"), " ")
+                ?.trim()
+                ?.take(200)
+                ?.takeIf(String::isNotEmpty)
+                ?: error.javaClass.simpleName
+        )
     }
 
     private suspend fun testNodeUnlock(node: Node): Pair<String, Boolean> = withContext(Dispatchers.IO) {
@@ -3354,14 +3604,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val no = lines.count { it.contains(Regex("""\bNO\b""", RegexOption.IGNORE_CASE)) }
             val pass = yes >= 3 && yes >= no
             val fullResult = if (lines.isEmpty()) {
-                if (result.stdout.isBlank()) "未识别到解锁结果" else "未识别关键结果（可在流媒体工具里查看完整输出）"
+                if (result.stdout.isBlank()) "未识别到解锁结果" else "未识别关键结果（可在主流站解锁测试中查看完整输出）"
             } else {
                 "YES=$yes, NO=$no\n" + lines.joinToString("\n")
             }
             fullResult to pass
         } catch (e: Exception) {
             Log.e(tag, "Unlock test failed for ${node.getDisplayName()}: ${e.message}")
-            ("解锁测试失败: ${e.message}") to false
+            ("主流站解锁测试失败: ${e.message}") to false
         } finally {
             session.stop()
         }
@@ -3420,6 +3670,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         priorityOrder: List<BestNodePriority>,
         mode: TestPreferMode?
     ): List<Node> = nodes.sortedWith(priorityOrderComparator(priorityOrder, mode))
+
+    private data class RankedNodes(
+        val nodes: List<Node>,
+        val weightedScores: Map<String, WeightedNodeScore> = emptyMap(),
+        val ignoredPriorities: List<BestNodePriority> = emptyList()
+    )
+
+    private fun rankNodesForMode(
+        nodes: List<Node>,
+        priorityOrder: List<BestNodePriority>,
+        mode: TestPreferMode?
+    ): RankedNodes {
+        if (mode?.rankingMode != PreferRankingMode.WEIGHTED_SCORE) {
+            return RankedNodes(sortNodesForSnapshotByOrder(nodes, priorityOrder, mode))
+        }
+
+        val weights = mode.priorityWeights.normalized()
+        val expectedPriorities = BestNodePriority.entries.filter { priority ->
+            weights.get(priority) > 0 && mode.supportsPriority(priority)
+        }
+        val metricScores = expectedPriorities.mapNotNull { priority ->
+            val scores = percentileMetricScores(nodes, priority, mode)
+            if (scores.isEmpty()) null else priority to scores
+        }.toMap()
+        val ignoredPriorities = expectedPriorities.filterNot(metricScores::containsKey)
+        val activeWeight = metricScores.keys.sumOf(weights::get)
+        if (activeWeight <= 0) {
+            return RankedNodes(
+                nodes = sortNodesForSnapshotByOrder(nodes, priorityOrder, mode),
+                ignoredPriorities = ignoredPriorities
+            )
+        }
+
+        val scoresByNode = nodes.associate { node ->
+            val perMetric = metricScores.mapValues { (_, scores) -> scores[node.id] ?: 0.0 }
+            val total = perMetric.entries.sumOf { (priority, score) ->
+                score * weights.get(priority)
+            } / activeWeight
+            node.id to WeightedNodeScore(
+                total = total,
+                latency = perMetric[BestNodePriority.LATENCY],
+                upload = perMetric[BestNodePriority.UPLOAD],
+                download = perMetric[BestNodePriority.DOWNLOAD],
+                unlock = perMetric[BestNodePriority.UNLOCK_COUNT]
+            )
+        }
+        val tieBreaker = priorityOrderComparator(priorityOrder, mode)
+        val comparator = Comparator<Node> { left, right ->
+            val scoreComparison = (scoresByNode[right.id]?.total ?: 0.0)
+                .compareTo(scoresByNode[left.id]?.total ?: 0.0)
+            if (scoreComparison != 0) scoreComparison else tieBreaker.compare(left, right)
+        }
+        return RankedNodes(
+            nodes = nodes.sortedWith(comparator),
+            weightedScores = scoresByNode,
+            ignoredPriorities = ignoredPriorities
+        )
+    }
+
+    private fun percentileMetricScores(
+        nodes: List<Node>,
+        priority: BestNodePriority,
+        mode: TestPreferMode
+    ): Map<String, Double> {
+        val values = nodes.mapNotNull { node ->
+            weightedMetricValue(node, priority, mode)?.let { value -> node.id to value }
+        }
+        if (values.isEmpty()) return emptyMap()
+        val orderedValues = values.map { it.second }.distinct().sorted()
+        if (orderedValues.size == 1) return values.associate { it.first to 100.0 }
+        val denominator = (orderedValues.size - 1).toDouble()
+        val scoreByValue = orderedValues.mapIndexed { index, value ->
+            value to (index / denominator * 100.0)
+        }.toMap()
+        return values.associate { (nodeId, value) -> nodeId to scoreByValue.getValue(value) }
+    }
+
+    private fun weightedMetricValue(
+        node: Node,
+        priority: BestNodePriority,
+        mode: TestPreferMode
+    ): Double? = when (priority) {
+        BestNodePriority.LATENCY -> node.latency.takeIf { it > 0 }?.let { -it.toDouble() }
+        BestNodePriority.UPLOAD -> node.uploadMbps.takeIf { it > 0f }?.toDouble()
+        BestNodePriority.DOWNLOAD -> node.downloadMbps.takeIf { it > 0f }?.toDouble()
+        BestNodePriority.UNLOCK_COUNT -> {
+            val hasResult = node.unlockSummary.isNotBlank() || node.autoTestStatus.startsWith("UNLOCK_")
+            if (!hasResult) null else {
+                unlockPriorityScore(node, mode) * 1_000.0 + extractUnlockYesCount(node.unlockSummary)
+            }
+        }
+    }
 
     private fun priorityOrderComparator(
         priorityOrder: List<BestNodePriority>,

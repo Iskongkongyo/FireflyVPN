@@ -149,10 +149,11 @@ APK 输出位于 app/build/outputs/apk/。发布版本使用：
 
 后端开发、部署和完整接口说明：
 
-- [后端部署说明](./backend/README.md)
-- [API 契约](./backend/API.md)
+- [Worker部署说明](./backend/worker/README.md)、[Nodejs部署说明](./backend/nodejs/README.md)
+- [Worker部署API 契约](./backend/worker/API.md)、[Nodejs部署API 契约](./backend/nodejs/API.md)
 
 <a id="security"></a>
+
 ## 🛡️ 安全与隐私
 
 - 设备私钥由 Android Keystore 保护，服务端只保存设备公钥和 Token 哈希。
@@ -208,8 +209,8 @@ npm test
 
 | 文档 | 用途 |
 | --- | --- |
-| [backend/API.md](./backend/API.md) | 当前 /api/v2 接口契约 |
-| [backend/README.md](./backend/README.md) | 后端开发、D1/KV 初始化与部署 |
+| [backend/worker(nodejs)/API.md](./backend/API.md) | 当前 /api/v2 接口契约 |
+| [backend/worker(nodejs)README.md](./backend/README.md) | 后端开发、D1/KV 初始化与部署 |
 
 <a id="license"></a>
 ## 📜 开源协议

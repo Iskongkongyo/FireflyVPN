@@ -60,6 +60,9 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
     // 标记设置是否发生变更
     private val _hasChanges = MutableStateFlow(false)
     val hasChanges: StateFlow<Boolean> = _hasChanges.asStateFlow()
+
+    private val _whitelistValidationEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val whitelistValidationEvents = _whitelistValidationEvents.asSharedFlow()
     
     // 过滤后的应用列表
     val filteredApps: StateFlow<List<AppInfo>> = combine(
@@ -178,6 +181,10 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
      * 设置是否启用分应用代理
      */
     fun setEnabled(enabled: Boolean) {
+        if (enabled && mode.value == PerAppProxyMode.WHITELIST && selectedPackages.value.isEmpty()) {
+            _whitelistValidationEvents.tryEmit(Unit)
+            return
+        }
         viewModelScope.launch {
             settingsRepository.setPerAppProxyEnabled(enabled)
             _hasChanges.value = true
@@ -188,6 +195,10 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
      * 设置代理模式
      */
     fun setMode(mode: PerAppProxyMode) {
+        if (mode == PerAppProxyMode.WHITELIST && isEnabled.value && selectedPackages.value.isEmpty()) {
+            _whitelistValidationEvents.tryEmit(Unit)
+            return
+        }
         viewModelScope.launch {
             settingsRepository.setPerAppProxyMode(mode)
             _hasChanges.value = true
@@ -205,8 +216,7 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
             } else {
                 current.add(packageName)
             }
-            settingsRepository.setSelectedPackages(current)
-            _hasChanges.value = true
+            saveSelectedPackages(current)
         }
     }
     
@@ -229,8 +239,7 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
             }
             
             // 更新存储
-            settingsRepository.setSelectedPackages(current)
-            _hasChanges.value = true
+            if (!saveSelectedPackages(current)) return@launch
             
             // 重新排序 _allApps 并更新
             // 注意：这里我们得重新排序所有应用，不仅仅是过滤后的
@@ -252,8 +261,7 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
             filtered.forEach { app ->
                 current.remove(app.packageName)
             }
-            settingsRepository.setSelectedPackages(current)
-            _hasChanges.value = true
+            saveSelectedPackages(current)
         }
     }
     
@@ -262,8 +270,17 @@ class PerAppProxyViewModel(application: Application) : AndroidViewModel(applicat
      */
     fun clearAll() {
         viewModelScope.launch {
-            settingsRepository.setSelectedPackages(emptySet())
-            _hasChanges.value = true
+            saveSelectedPackages(emptySet())
         }
+    }
+
+    private suspend fun saveSelectedPackages(packages: Set<String>): Boolean {
+        if (packages.isEmpty() && isEnabled.value && mode.value == PerAppProxyMode.WHITELIST) {
+            _whitelistValidationEvents.emit(Unit)
+            return false
+        }
+        settingsRepository.setSelectedPackages(packages)
+        _hasChanges.value = true
+        return true
     }
 }

@@ -443,7 +443,7 @@ private fun AutoTestConfigDialogV2(
                     text = if (autoTestProgress.running) {
                         "当前阶段: ${autoTestProgress.stage}\n${autoTestProgress.message}"
                     } else {
-                        "测试流程：拉节点 -> 延迟测试(TCPing/URL Test) -> 带宽测试(上下行) -> 流媒体解锁测试"
+                        "测试流程：拉节点 -> 延迟测试(TCPing/URL Test) -> 带宽测试(上下行) -> 主流站解锁测试"
                     },
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -581,7 +581,7 @@ private fun AutoTestConfigDialogV2(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = autoTestUnlockEnabled, onCheckedChange = onSetAutoTestUnlockEnabled)
-                    Text("自动测试流媒体解锁")
+                    Text("自动执行主流站解锁测试")
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -57,18 +57,24 @@ import java.util.Date
 @Composable
 fun RuleManagementScreen(
     viewModel: RuleManagementViewModel,
-    onBack: () -> Unit,
+    onBack: (Boolean) -> Unit,
     onRuleClick: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val rules by viewModel.rules.collectAsState()
     val stages by viewModel.updateStages.collectAsState()
+    val pendingOperationCount by viewModel.pendingOperationCount.collectAsState()
 
     RuleEventToasts(viewModel)
 
     AppScreenScaffold(
         title = stringResource(R.string.rule_management_title),
         subtitle = stringResource(R.string.rule_management_subtitle),
-        onBack = onBack
+        onBack = { onBack(viewModel.consumeChanges()) },
+        backEnabled = pendingOperationCount == 0,
+        onBackBlocked = {
+            Toast.makeText(context, R.string.rule_operation_in_progress, Toast.LENGTH_SHORT).show()
+        }
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -121,6 +127,7 @@ fun RuleDetailScreen(
     val context = LocalContext.current
     val rules by viewModel.rules.collectAsState()
     val stages by viewModel.updateStages.collectAsState()
+    val pendingOperationCount by viewModel.pendingOperationCount.collectAsState()
     val state = rules.firstOrNull { it.rule.id == ruleId }
     var showRestoreConfirmation by remember { mutableStateOf(false) }
 
@@ -130,7 +137,11 @@ fun RuleDetailScreen(
         title = state?.let { stringResource(it.rule.nameRes) }
             ?: stringResource(R.string.rule_detail_title),
         subtitle = stringResource(R.string.rule_detail_title),
-        onBack = onBack
+        onBack = onBack,
+        backEnabled = pendingOperationCount == 0,
+        onBackBlocked = {
+            Toast.makeText(context, R.string.rule_operation_in_progress, Toast.LENGTH_SHORT).show()
+        }
     ) {
         if (state != null) {
             val stage = stages[state.rule.id]

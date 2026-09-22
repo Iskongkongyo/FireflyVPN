@@ -11,7 +11,7 @@
 static bool isExpectedSignature(const jbyte* hash, jsize hashLen) {
     if (hash == nullptr || hashLen != 32) return false;
 
-    // 占位签名示例 (全零 SHA-256)
+     // 占位签名示例 (全零 SHA-256)
 static const uint8_t partA[32] = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

@@ -1,5 +1,6 @@
 package xyz.a202132.app.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.collect
 import xyz.a202132.app.data.model.PerAppProxyMode
 import xyz.a202132.app.R
 import xyz.a202132.app.ui.theme.Primary
@@ -79,6 +81,12 @@ fun PerAppProxyScreen(
     // 权限拒绝状态 (针对定制 ROM)
     val isPermissionDenied by viewModel.isPermissionDenied.collectAsState()
     val context = LocalContext.current
+
+    LaunchedEffect(viewModel) {
+        viewModel.whitelistValidationEvents.collect {
+            Toast.makeText(context, R.string.per_app_whitelist_empty, Toast.LENGTH_LONG).show()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -219,7 +227,6 @@ fun PerAppProxyScreen(
                             title = "代理模式",
                             subtitle = "仅代理选中",
                             isSelected = mode == PerAppProxyMode.WHITELIST,
-                            enabled = isEnabled,
                             onClick = { viewModel.setMode(PerAppProxyMode.WHITELIST) },
                             modifier = Modifier.weight(1f)
                         )
@@ -229,32 +236,29 @@ fun PerAppProxyScreen(
                             title = "绕过模式",
                             subtitle = "绕过选中",
                             isSelected = mode == PerAppProxyMode.BLACKLIST,
-                            enabled = isEnabled,
                             onClick = { viewModel.setMode(PerAppProxyMode.BLACKLIST) },
                             modifier = Modifier.weight(1f)
                         )
                     }
 
-                    if (isEnabled) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = Primary.copy(alpha = 0.1f)
-                            )
-                        ) {
-                            Text(
-                                text = if (mode == PerAppProxyMode.WHITELIST) {
-                                    "💡 代理模式：只有选中的应用流量会经过 VPN"
-                                } else {
-                                    "💡 绕过模式：选中的应用流量会绕过 VPN 直连"
-                                },
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Primary.copy(alpha = 0.1f)
+                        )
+                    ) {
+                        Text(
+                            text = when {
+                                !isEnabled -> "💡可先选择模式和应用，然后再启用分应用代理"
+                                mode == PerAppProxyMode.WHITELIST -> "💡代理模式：只有选中的应用流量会经过 VPN"
+                                else -> "💡绕过模式：选中的应用流量会绕过 VPN 直连"
+                            },
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(12.dp)
+                        )
                     }
                 }
             }
@@ -275,7 +279,6 @@ fun PerAppProxyScreen(
                     Checkbox(
                         checked = showSystemApps,
                         onCheckedChange = { viewModel.showSystemApps.value = it },
-                        enabled = isEnabled,
                         colors = CheckboxDefaults.colors(
                             checkedColor = Primary
                         )
@@ -283,8 +286,7 @@ fun PerAppProxyScreen(
                     Text(
                         text = "显示系统应用",
                         fontSize = 14.sp,
-                        color = if (isEnabled) MaterialTheme.colorScheme.onSurface 
-                               else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 
@@ -308,7 +310,6 @@ fun PerAppProxyScreen(
                     Icon(Icons.Default.Search, contentDescription = null)
                 },
                 singleLine = true,
-                enabled = isEnabled,
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = Primary,
@@ -352,7 +353,6 @@ fun PerAppProxyScreen(
                         AppListItem(
                             app = app,
                             isSelected = app.packageName in selectedPackages,
-                            enabled = isEnabled,
                             onToggle = { viewModel.togglePackage(app.packageName) }
                         )
                     }
@@ -372,17 +372,16 @@ private fun ModeButton(
     title: String,
     subtitle: String,
     isSelected: Boolean,
-    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled) { onClick() },
+            .clickable { onClick() },
         shape = RoundedCornerShape(12.dp),
-        color = if (isSelected && enabled) Primary else MaterialTheme.colorScheme.surface,
-        border = if (!isSelected && enabled) {
+        color = if (isSelected) Primary else MaterialTheme.colorScheme.surface,
+        border = if (!isSelected) {
             androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
         } else null
     ) {
@@ -394,20 +393,13 @@ private fun ModeButton(
                 text = title,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
-                color = when {
-                    !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
-                    isSelected -> Color.White
-                    else -> MaterialTheme.colorScheme.onSurface
-                }
+                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = subtitle,
                 fontSize = 12.sp,
-                color = when {
-                    !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    isSelected -> Color.White.copy(alpha = 0.8f)
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                color = if (isSelected) Color.White.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -420,21 +412,20 @@ private fun ModeButton(
 private fun AppListItem(
     app: AppInfo,
     isSelected: Boolean,
-    enabled: Boolean,
     onToggle: () -> Unit
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled) { onToggle() },
+            .clickable { onToggle() },
         shape = RoundedCornerShape(12.dp),
-        color = if (isSelected && enabled) {
+        color = if (isSelected) {
             Primary.copy(alpha = 0.1f)
         } else {
             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         },
-        border = if (isSelected && enabled) {
+        border = if (isSelected) {
             androidx.compose.foundation.BorderStroke(1.dp, Primary)
         } else null
     ) {
@@ -479,8 +470,7 @@ private fun AppListItem(
                     text = app.appName,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (enabled) MaterialTheme.colorScheme.onSurface 
-                           else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -494,7 +484,7 @@ private fun AppListItem(
             }
             
             // 选中状态
-            if (isSelected && enabled) {
+            if (isSelected) {
                 Box(
                     modifier = Modifier
                         .size(24.dp)
@@ -512,7 +502,6 @@ private fun AppListItem(
                 Checkbox(
                     checked = isSelected,
                     onCheckedChange = null,
-                    enabled = enabled,
                     colors = CheckboxDefaults.colors(
                         checkedColor = Primary
                     )

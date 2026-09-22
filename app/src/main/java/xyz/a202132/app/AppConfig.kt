@@ -32,7 +32,7 @@ object AppConfig {
     const val STARTUP_SPLASH_DURATION_SECONDS = 10 // 启动图倒计时时长，设为0则不启用
 
     // Firefly Edge API（保持生产域名不变，仅使用新版 /api/v2 路由）
-    const val API_BASE_URL = "https://填写你的生产域名"
+    const val API_BASE_URL = "https://填写域名"
     const val BOOTSTRAP_URL = "$API_BASE_URL/api/v2/bootstrap"
     const val SUBSCRIPTION_URL = "$API_BASE_URL/api/v2/subscriptions"
     const val USAGE_REPORT_URL = "$API_BASE_URL/api/v2/usage/report"
@@ -55,7 +55,7 @@ object AppConfig {
     // Concurrency
     const val TCPING_CONCURRENCY = 16 // TCPing并发数
     const val URL_TEST_CONCURRENCY = 10 // URL Test并发数
-    const val AUTO_TEST_UNLOCK_CONCURRENCY = 3 // 流媒体解锁测试并发数
+    const val AUTO_TEST_UNLOCK_CONCURRENCY = 3 // 主流站解锁测试并发数
     
     // VPN
     const val VPN_MTU = 9000
@@ -164,7 +164,7 @@ object AppConfig {
         return sizes
     }
 
-    // 流媒体解锁大概测试的网站名
+    // 主流站解锁测试涉及的网站名
     val UNLOCK_PRIORITY_PRESET_SITES: List<UnlockPrioritySite> = listOf(
         UnlockPrioritySite("apple", "Apple", listOf("Apple")),
         UnlockPrioritySite("bing_search", "BingSearch", listOf("BingSearch")),

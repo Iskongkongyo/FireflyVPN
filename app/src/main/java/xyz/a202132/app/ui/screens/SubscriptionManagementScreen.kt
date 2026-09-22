@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -45,10 +46,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -66,7 +68,7 @@ import xyz.a202132.app.AppConfig
 import xyz.a202132.app.ui.components.AppScreenScaffold
 import xyz.a202132.app.viewmodel.MainViewModel
 import java.util.Date
-import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun SubscriptionManagementScreen(
@@ -82,13 +84,13 @@ fun SubscriptionManagementScreen(
     val refreshingIds by viewModel.refreshingSubscriptionGroupIds.collectAsState()
     var deleting by remember { mutableStateOf<SubscriptionGroupSummary?>(null) }
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val autoScrollEdgePx = with(density) { 72.dp.toPx() }
+    val autoScrollEdgePx = with(LocalDensity.current) { 80.dp.toPx() }
     val orderedIdsState = remember { mutableStateOf(nodeGroups.map { it.id }) }
     var orderedIds by orderedIdsState
     var draggingId by remember { mutableStateOf<String?>(null) }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var draggedVisualTopY by remember { mutableFloatStateOf(0f) }
+    var draggedItemHeight by remember { mutableFloatStateOf(0f) }
+    var autoScrollAmount by remember { mutableFloatStateOf(0f) }
     var pendingOrder by remember { mutableStateOf<List<String>?>(null) }
     val backendIds = nodeGroups.map { it.id }
 
@@ -96,6 +98,61 @@ fun SubscriptionManagementScreen(
         if (draggingId == null && (pendingOrder == null || backendIds == pendingOrder)) {
             orderedIds = backendIds
             if (backendIds == pendingOrder) pendingOrder = null
+        }
+    }
+
+    fun moveDraggedGroup(direction: Int) {
+        val draggedId = draggingId ?: return
+        val currentOrder = orderedIdsState.value
+        val from = currentOrder.indexOf(draggedId)
+        val layout = listState.layoutInfo
+        if (from < 0 || draggedItemHeight <= 0f || direction == 0) return
+
+        val draggedCenter = draggedVisualTopY + draggedItemHeight / 2f
+        val visibleById = layout.visibleItemsInfo.associateBy { it.key }
+        val targetIndex = if (direction > 0) {
+            ((from + 1) until currentOrder.size).lastOrNull { index ->
+                visibleById[currentOrder[index]]?.let { target ->
+                    draggedCenter >= target.offset + target.size / 2f
+                } == true
+            }
+        } else {
+            (0 until from).firstOrNull { index ->
+                visibleById[currentOrder[index]]?.let { target ->
+                    draggedCenter <= target.offset + target.size / 2f
+                } == true
+            }
+        }
+        if (targetIndex != null) {
+            orderedIds = currentOrder.toMutableList().also { ids ->
+                val moved = ids.removeAt(from)
+                ids.add(targetIndex, moved)
+            }
+        }
+    }
+
+    fun finishGroupDrag() {
+        if (draggingId == null) return
+        val finalOrder = orderedIdsState.value
+        pendingOrder = finalOrder
+        draggingId = null
+        draggedVisualTopY = 0f
+        draggedItemHeight = 0f
+        autoScrollAmount = 0f
+        viewModel.setNodeGroupOrder(finalOrder)
+    }
+
+    LaunchedEffect(draggingId, autoScrollAmount) {
+        while (draggingId != null && autoScrollAmount != 0f) {
+            val requested = autoScrollAmount
+            val consumed = listState.scrollBy(requested)
+            if (consumed == 0f) {
+                autoScrollAmount = 0f
+                break
+            }
+
+            withFrameNanos { }
+            moveDraggedGroup(if (requested > 0f) 1 else -1)
         }
     }
 
@@ -123,11 +180,73 @@ fun SubscriptionManagementScreen(
                 Text("正在准备订阅分组…", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                    // 手势绑定在列表容器上。拖拽卡片跨越大量项目并被 LazyColumn
+                    // 重新布局或回收时，容器仍持续接收同一条指针事件流。
+                    .pointerInput(listState) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { pointer ->
+                                val touchedItem = listState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull { item ->
+                                        item.key in orderedIdsState.value &&
+                                            pointer.y >= item.offset &&
+                                            pointer.y <= item.offset + item.size
+                                    }
+                                draggingId = touchedItem?.key as? String
+                                draggedVisualTopY = touchedItem?.offset?.toFloat() ?: 0f
+                                draggedItemHeight = touchedItem?.size?.toFloat() ?: 0f
+                                autoScrollAmount = 0f
+                            },
+                            onDragCancel = { finishGroupDrag() },
+                            onDragEnd = { finishGroupDrag() },
+                            onDrag = { change, dragAmount ->
+                                val draggedId = draggingId
+                                if (draggedId != null) {
+                                    change.consume()
+                                    draggedVisualTopY += dragAmount.y
+                                    val layout = listState.layoutInfo
+                                    if (dragAmount.y != 0f) {
+                                        moveDraggedGroup(if (dragAmount.y > 0f) 1 else -1)
+                                    }
+
+                                    autoScrollAmount = if (draggedItemHeight <= 0f) {
+                                        0f
+                                    } else {
+                                        val draggedTop = draggedVisualTopY
+                                        val draggedBottom = draggedVisualTopY + draggedItemHeight
+                                        val accelerationDistance =
+                                            (autoScrollEdgePx + draggedItemHeight / 2f).coerceAtLeast(1f)
+                                        when {
+                                            draggedTop <=
+                                                layout.viewportStartOffset + autoScrollEdgePx -> {
+                                                val overflowRatio =
+                                                    ((layout.viewportStartOffset + autoScrollEdgePx -
+                                                        draggedTop) / accelerationDistance)
+                                                        .coerceIn(0f, 1f)
+                                                -(8f + 28f * overflowRatio)
+                                            }
+                                            draggedBottom >=
+                                                layout.viewportEndOffset - autoScrollEdgePx -> {
+                                                val overflowRatio =
+                                                    ((draggedBottom -
+                                                        (layout.viewportEndOffset - autoScrollEdgePx)) /
+                                                        accelerationDistance)
+                                                        .coerceIn(0f, 1f)
+                                                8f + 28f * overflowRatio
+                                            }
+                                            else -> 0f
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                        },
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                 item {
                     Text(
                         text = "长按分组卡片并上下拖动即可排序；节点列表会按此顺序显示。",
@@ -141,80 +260,8 @@ fun SubscriptionManagementScreen(
                     val isDragging = draggingId == nodeGroup.id
                     SubscriptionGroupCard(
                         modifier = Modifier
-                            .zIndex(if (isDragging) 1f else 0f)
                             .graphicsLayer {
-                                translationY = if (isDragging) dragOffsetY else 0f
-                                scaleX = if (isDragging) 1.015f else 1f
-                                scaleY = if (isDragging) 1.015f else 1f
-                                shadowElevation = if (isDragging) 12.dp.toPx() else 0f
-                            }
-                            .pointerInput(nodeGroup.id) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        draggingId = nodeGroup.id
-                                        dragOffsetY = 0f
-                                    },
-                                    onDragCancel = {
-                                        draggingId = null
-                                        dragOffsetY = 0f
-                                    },
-                                    onDragEnd = {
-                                        val finalOrder = orderedIdsState.value
-                                        pendingOrder = finalOrder
-                                        draggingId = null
-                                        dragOffsetY = 0f
-                                        viewModel.setNodeGroupOrder(finalOrder)
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        dragOffsetY += dragAmount.y
-                                        val currentOrder = orderedIdsState.value
-                                        val from = currentOrder.indexOf(nodeGroup.id)
-                                        val layout = listState.layoutInfo
-                                        val item = layout.visibleItemsInfo.firstOrNull { it.key == nodeGroup.id }
-                                        if (from >= 0 && item != null && dragAmount.y != 0f) {
-                                            val direction = if (dragAmount.y > 0f) 1 else -1
-                                            val draggedCenter = item.offset + item.size / 2f + dragOffsetY
-                                            val visibleById = layout.visibleItemsInfo.associateBy { it.key }
-                                            val targetIndex = if (direction > 0) {
-                                                ((from + 1) until currentOrder.size).lastOrNull { index ->
-                                                    visibleById[currentOrder[index]]?.let { target ->
-                                                        draggedCenter >= target.offset + target.size / 2f
-                                                    } == true
-                                                }
-                                            } else {
-                                                (0 until from).firstOrNull { index ->
-                                                    visibleById[currentOrder[index]]?.let { target ->
-                                                        draggedCenter <= target.offset + target.size / 2f
-                                                    } == true
-                                                }
-                                            }
-                                            if (targetIndex != null) {
-                                                val target = visibleById[currentOrder[targetIndex]]
-                                                orderedIds = currentOrder.toMutableList().also { ids ->
-                                                    val moved = ids.removeAt(from)
-                                                    ids.add(targetIndex, moved)
-                                                }
-                                                // 抵消布局位置变化，让卡片交换后仍紧贴手指。
-                                                if (target != null) {
-                                                    dragOffsetY -= target.offset - item.offset
-                                                }
-                                            }
-                                        }
-
-                                        val scrollAmount = when {
-                                            item == null -> 0f
-                                            dragAmount.y < 0 && item.offset + dragOffsetY <
-                                                layout.viewportStartOffset + autoScrollEdgePx -> -18f
-                                            dragAmount.y > 0 && item.offset + item.size + dragOffsetY >
-                                                layout.viewportEndOffset - autoScrollEdgePx -> 18f
-                                            else -> 0f
-                                        }
-                                        if (scrollAmount != 0f) {
-                                            scope.launch { listState.scrollBy(scrollAmount) }
-                                        }
-                                    }
-                                )
+                                alpha = if (isDragging) 0f else 1f
                             },
                         nodeGroup = nodeGroup,
                         summary = summary,
@@ -234,6 +281,33 @@ fun SubscriptionManagementScreen(
                     )
                 }
                 item { Spacer(modifier = Modifier.height(8.dp)) }
+                }
+
+                val draggedGroup = draggingId?.let { id ->
+                    nodeGroups.firstOrNull { it.id == id }
+                }
+                if (draggedGroup != null && draggedItemHeight > 0f) {
+                    val draggedSummary = summaries.firstOrNull {
+                        it.group.id == draggedGroup.id
+                    }
+                    SubscriptionGroupCard(
+                        modifier = Modifier
+                            .offset { IntOffset(0, draggedVisualTopY.roundToInt()) }
+                            .zIndex(2f)
+                            .graphicsLayer {
+                                scaleX = 1.015f
+                                scaleY = 1.015f
+                                shadowElevation = 12.dp.toPx()
+                            },
+                        nodeGroup = draggedGroup,
+                        summary = draggedSummary,
+                        favoriteNodeCount = favoriteNodeCount,
+                        refreshing = draggedGroup.id in refreshingIds,
+                        onRefresh = {},
+                        onEdit = {},
+                        onDelete = {}
+                    )
+                }
             }
         }
     }
@@ -488,14 +562,20 @@ private fun SubscriptionGroupEditorFields(
             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(" 添加链接")
         }
-        OutlinedTextField(
-            value = editor.userAgent,
-            onValueChange = { editor.userAgent = it.replace("\r", "").replace("\n", "") },
-            label = { Text("用户代理") },
-            supportingText = { Text("默认：${AppConfig.HTTP_USER_AGENT}；留空可恢复默认") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(
+                value = editor.userAgent,
+                onValueChange = { editor.userAgent = it.replace("\r", "").replace("\n", "") },
+                label = { Text("用户代理") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = "默认：${AppConfig.HTTP_USER_AGENT}；留空可恢复默认",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         SettingSwitchRow(
             title = "自动去重",
             subtitle = "移除订阅中的相同节点",
@@ -508,18 +588,24 @@ private fun SubscriptionGroupEditorFields(
             checked = editor.autoUpdate,
             onCheckedChange = { editor.autoUpdate = it }
         )
-        OutlinedTextField(
-            value = editor.interval,
-            onValueChange = { editor.interval = it.filter(Char::isDigit) },
-            label = { Text("更新间隔（分钟）") },
-            supportingText = {
-                Text("更新间隔有效范围为0-10080分钟！0分钟：APP 启动稳定后仅更新一次；1-10080分钟：APP 会定时更新")
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            enabled = editor.autoUpdate,
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(
+                value = editor.interval,
+                onValueChange = { editor.interval = it.filter(Char::isDigit) },
+                label = { Text("更新间隔（分钟）") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                enabled = editor.autoUpdate,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = "更新间隔有效范围为0-10080分钟！0分钟：APP 启动稳定后仅更新一次；1-10080分钟：APP 会定时更新",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                    alpha = if (editor.autoUpdate) 1f else 0.38f
+                )
+            )
+        }
         Spacer(modifier = Modifier.height(8.dp))
     }
 }

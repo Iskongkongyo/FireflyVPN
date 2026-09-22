@@ -12,6 +12,54 @@ enum class BestNodePriority {
     UNLOCK_COUNT
 }
 
+enum class PreferRankingMode {
+    PRIORITY_ORDER,
+    WEIGHTED_SCORE
+}
+
+data class BestNodeWeights(
+    val latency: Int = 40,
+    val upload: Int = 10,
+    val download: Int = 30,
+    val unlock: Int = 20
+) {
+    fun normalized(): BestNodeWeights = copy(
+        latency = latency.coerceIn(0, 100),
+        upload = upload.coerceIn(0, 100),
+        download = download.coerceIn(0, 100),
+        unlock = unlock.coerceIn(0, 100)
+    )
+
+    fun get(priority: BestNodePriority): Int = when (priority) {
+        BestNodePriority.LATENCY -> latency
+        BestNodePriority.UPLOAD -> upload
+        BestNodePriority.DOWNLOAD -> download
+        BestNodePriority.UNLOCK_COUNT -> unlock
+    }
+
+    fun with(priority: BestNodePriority, value: Int): BestNodeWeights = when (priority) {
+        BestNodePriority.LATENCY -> copy(latency = value.coerceIn(0, 100))
+        BestNodePriority.UPLOAD -> copy(upload = value.coerceIn(0, 100))
+        BestNodePriority.DOWNLOAD -> copy(download = value.coerceIn(0, 100))
+        BestNodePriority.UNLOCK_COUNT -> copy(unlock = value.coerceIn(0, 100))
+    }
+}
+
+data class WeightedNodeScore(
+    val total: Double,
+    val latency: Double? = null,
+    val upload: Double? = null,
+    val download: Double? = null,
+    val unlock: Double? = null
+) {
+    fun get(priority: BestNodePriority): Double? = when (priority) {
+        BestNodePriority.LATENCY -> latency
+        BestNodePriority.UPLOAD -> upload
+        BestNodePriority.DOWNLOAD -> download
+        BestNodePriority.UNLOCK_COUNT -> unlock
+    }
+}
+
 enum class UnlockPriorityMode {
     COUNT,
     TARGET_SITES
@@ -57,6 +105,8 @@ data class TestPreferMode(
     val nodeLimit: Int = 20,
     val defaultPriority: BestNodePriority = BestNodePriority.LATENCY,
     val priorityOrder: List<BestNodePriority> = BestNodePriority.entries.toList(),
+    val rankingMode: PreferRankingMode = PreferRankingMode.PRIORITY_ORDER,
+    val priorityWeights: BestNodeWeights = BestNodeWeights(),
     val unlockPriorityMode: UnlockPriorityMode = UnlockPriorityMode.COUNT,
     val unlockPriorityTargetSiteIds: List<String> = emptyList(),
     val autoConnectBest: Boolean = false
@@ -148,7 +198,11 @@ fun TestPreferMode.normalizePriorityOrder(): TestPreferMode {
         if (defaultPriority !in this) add(0, defaultPriority)
         BestNodePriority.entries.filterNot { it in this }.forEach(::add)
     }
-    return copy(defaultPriority = normalized.first(), priorityOrder = normalized)
+    return copy(
+        defaultPriority = normalized.first(),
+        priorityOrder = normalized,
+        priorityWeights = priorityWeights.normalized()
+    )
 }
 
 fun TestPreferMode.supportsPriority(priority: BestNodePriority): Boolean = when (priority) {

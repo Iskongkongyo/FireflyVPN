@@ -20,9 +20,11 @@ import xyz.a202132.app.data.model.TunStackMode
 import xyz.a202132.app.rules.model.RuleRoutingOptions
 import xyz.a202132.app.viewmodel.AutoTestLatencyMode
 import xyz.a202132.app.viewmodel.BestNodePriority
+import xyz.a202132.app.viewmodel.BestNodeWeights
 import xyz.a202132.app.viewmodel.BUILTIN_PREFER_MODE_CHAT
 import xyz.a202132.app.viewmodel.StartupDefaultTestMode
 import xyz.a202132.app.viewmodel.TestPreferMode
+import xyz.a202132.app.viewmodel.PreferRankingMode
 import xyz.a202132.app.viewmodel.UnlockPriorityMode
 import xyz.a202132.app.viewmodel.normalizePreferTestModes
 import xyz.a202132.app.viewmodel.normalizePriorityOrder
@@ -892,6 +894,11 @@ class SettingsRepository(private val context: Context) {
                     put("nodeLimit", mode.nodeLimit)
                     put("defaultPriority", mode.defaultPriority.name)
                     put("priorityOrder", JSONArray(mode.priorityOrder.map { it.name }))
+                    put("rankingMode", mode.rankingMode.name)
+                    put("latencyWeight", mode.priorityWeights.latency)
+                    put("uploadWeight", mode.priorityWeights.upload)
+                    put("downloadWeight", mode.priorityWeights.download)
+                    put("unlockWeight", mode.priorityWeights.unlock)
                     put("unlockPriorityMode", mode.unlockPriorityMode.name)
                     put("unlockPriorityTargetSiteIds", JSONArray(mode.unlockPriorityTargetSiteIds))
                     put("autoConnectBest", mode.autoConnectBest)
@@ -927,6 +934,17 @@ class SettingsRepository(private val context: Context) {
                 }
                 ?.takeIf { it.isNotEmpty() }
                 ?: listOf(defaultPriority)
+            val rankingMode = runCatching {
+                PreferRankingMode.valueOf(
+                    obj.optString("rankingMode", PreferRankingMode.PRIORITY_ORDER.name)
+                )
+            }.getOrDefault(PreferRankingMode.PRIORITY_ORDER)
+            val priorityWeights = BestNodeWeights(
+                latency = obj.optInt("latencyWeight", 40),
+                upload = obj.optInt("uploadWeight", 10),
+                download = obj.optInt("downloadWeight", 30),
+                unlock = obj.optInt("unlockWeight", 20)
+            ).normalized()
             val unlockPriorityMode = runCatching {
                 UnlockPriorityMode.valueOf(obj.optString("unlockPriorityMode", UnlockPriorityMode.COUNT.name))
             }.getOrDefault(UnlockPriorityMode.COUNT)
@@ -961,6 +979,8 @@ class SettingsRepository(private val context: Context) {
                 nodeLimit = obj.optInt("nodeLimit", 20).coerceIn(1, 200),
                 defaultPriority = defaultPriority,
                 priorityOrder = priorityOrder,
+                rankingMode = rankingMode,
+                priorityWeights = priorityWeights,
                 unlockPriorityMode = unlockPriorityMode,
                 unlockPriorityTargetSiteIds = unlockPriorityTargetSiteIds,
                 autoConnectBest = obj.optBoolean("autoConnectBest", false)

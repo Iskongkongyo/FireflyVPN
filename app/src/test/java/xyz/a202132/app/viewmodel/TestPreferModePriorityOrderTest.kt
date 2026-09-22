@@ -63,5 +63,31 @@ class TestPreferModePriorityOrderTest {
         val downloadMode = builtInPreferTestModes().first { it.id == BUILTIN_PREFER_MODE_DOWNLOAD }
 
         assertEquals(BestNodePriority.DOWNLOAD, downloadMode.normalizePriorityOrder().priorityOrder.first())
+        assertEquals(PreferRankingMode.PRIORITY_ORDER, downloadMode.rankingMode)
+    }
+
+    @Test
+    fun weights_allowZeroAndClampValuesToSupportedRange() {
+        val weights = BestNodeWeights(
+            latency = -1,
+            upload = 0,
+            download = 101,
+            unlock = 25
+        ).normalized()
+
+        assertEquals(0, weights.latency)
+        assertEquals(0, weights.upload)
+        assertEquals(100, weights.download)
+        assertEquals(25, weights.unlock)
+    }
+
+    @Test
+    fun weights_canUpdateOneMetricWithoutChangingOthers() {
+        val weights = BestNodeWeights().with(BestNodePriority.UPLOAD, 55)
+
+        assertEquals(40, weights.latency)
+        assertEquals(55, weights.upload)
+        assertEquals(30, weights.download)
+        assertEquals(20, weights.unlock)
     }
 }

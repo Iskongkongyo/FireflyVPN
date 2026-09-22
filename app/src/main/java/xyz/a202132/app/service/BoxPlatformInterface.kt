@@ -15,8 +15,10 @@ import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.TunOptions
 import kotlinx.coroutines.flow.first
+import xyz.a202132.app.R
 import java.net.Inet6Address
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicBoolean
 import java.net.InterfaceAddress
 import io.nekohasekai.libbox.NetworkInterface as LibboxNetworkInterface
 
@@ -33,6 +35,8 @@ class BoxPlatformInterface(
         private const val TAG = "BoxPlatformInterface"
     }
     
+    private val tunLock = Any()
+    private val isShuttingDown = AtomicBoolean(false)
     private var tunFd: ParcelFileDescriptor? = null
     private var defaultNetwork: Network? = null
     private var interfaceUpdateListener: InterfaceUpdateListener? = null
@@ -231,6 +235,8 @@ class BoxPlatformInterface(
      */
     override fun openTun(options: TunOptions): Int {
         Log.d(TAG, "Opening TUN interface with MTU: ${options.mtu}")
+
+        check(!isShuttingDown.get()) { "VPN is shutting down" }
         
         val builder = service.createVpnBuilder()
             .setSession("空空加速器")
@@ -279,9 +285,24 @@ class BoxPlatformInterface(
             }
         }
         
-        tunFd = builder.establish()
-        
-        val fd = tunFd?.fd ?: -1
+        val newTunFd = builder.establish()
+            ?: throw IllegalStateException("Failed to establish VPN TUN interface")
+
+        val fd = synchronized(tunLock) {
+            if (isShuttingDown.get()) {
+                newTunFd.close()
+                throw IllegalStateException("VPN stopped while opening TUN interface")
+            }
+
+            // libbox 正常情况下只会建立一次 TUN，但重载或异常重入时不能直接
+            // 覆盖旧引用，否则旧 ParcelFileDescriptor 会一直维持系统 VPN 会话。
+            tunFd?.let { oldTunFd ->
+                runCatching { oldTunFd.close() }
+                    .onFailure { Log.w(TAG, "Failed to close replaced TUN interface", it) }
+            }
+            tunFd = newTunFd
+            newTunFd.fd
+        }
         Log.d(TAG, "TUN interface opened with fd: $fd")
         return fd
     }
@@ -316,15 +337,20 @@ class BoxPlatformInterface(
             xyz.a202132.app.data.model.PerAppProxyMode.WHITELIST -> {
                 // 代理模式：只允许选中的应用使用 VPN
                 if (selectedPackages.isEmpty()) {
-                    Log.w(TAG, "Whitelist mode but no apps selected - no apps will use VPN")
+                    throw IllegalStateException(service.getString(R.string.per_app_whitelist_empty))
                 }
+                var allowedApplicationCount = 0
                 selectedPackages.forEach { pkg ->
                     try {
                         builder.addAllowedApplication(pkg)
+                        allowedApplicationCount++
                         Log.d(TAG, "Allowed app: $pkg")
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to allow app: $pkg", e)
                     }
+                }
+                if (allowedApplicationCount == 0) {
+                    throw IllegalStateException(service.getString(R.string.per_app_whitelist_no_valid_apps))
                 }
                 return true // 使用了白名单模式
             }
@@ -493,17 +519,23 @@ class BoxPlatformInterface(
         return false
     }
     
-    fun closeTun() {
+    fun closeTun(): Boolean {
         val startTime = System.currentTimeMillis()
-        val hadFd = tunFd != null
+        // 先禁止后续 openTun()，防止停止与尚未完成的核心启动并发时，在清理后
+        // 又建立一个无人持有引用的新 TUN。
+        isShuttingDown.set(true)
+        val fdToClose = synchronized(tunLock) {
+            tunFd.also { tunFd = null }
+        }
+        val hadFd = fdToClose != null
         try {
-            tunFd?.close()
-            tunFd = null
+            fdToClose?.close()
             val elapsed = System.currentTimeMillis() - startTime
             Log.d(TAG, "TUN interface closed (hadFd=$hadFd, took ${elapsed}ms)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to close TUN", e)
         }
+        return hadFd
     }
     
     // 辅助类

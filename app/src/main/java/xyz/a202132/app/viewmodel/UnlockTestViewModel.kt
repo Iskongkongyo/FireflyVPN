@@ -46,7 +46,10 @@ data class UnlockNodeResult(
     val status: UnlockResultStatus = UnlockResultStatus.PENDING,
     val summary: String = "等待测试",
     val rawOutput: String = "",
-    val testedAt: Long = 0L
+    val testedAt: Long = 0L,
+    val exitCode: Int? = null,
+    val durationMillis: Long? = null,
+    val fullOutput: String = ""
 )
 
 class UnlockTestViewModel(application: Application) : AndroidViewModel(application) {
@@ -102,7 +105,6 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         val ids = visibleNodes.map { it.id }.toSet()
         visibleNodeIds.value = ids
         _selectedNodeIds.update { selected -> selected.intersect(ids) }
-        _results.update { list -> list.filter { it.nodeId in ids } }
     }
 
     fun setAllSelected(selected: Boolean) {
@@ -119,18 +121,19 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun selectCurrentNodeOnly() {
+    fun selectCurrentNodeOnly(): Boolean {
         val currentId = currentSelectedNodeId.value
         if (currentId.isNullOrBlank()) {
             _error.value = "请先在主页选择节点"
-            return
+            return false
         }
         val exists = nodes.value.any { it.id == currentId }
         if (!exists) {
             _error.value = "当前节点不在可测列表中"
-            return
+            return false
         }
         _selectedNodeIds.value = setOf(currentId)
+        return true
     }
 
     fun selectRandomNodes(count: Int) {
@@ -151,21 +154,21 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
             .toSet()
     }
 
-    fun startTests() {
-        if (_isRunning.value) return
+    fun startTests(): Boolean {
+        if (_isRunning.value) return false
 
         val selectedNodes = nodes.value.filter { _selectedNodeIds.value.contains(it.id) }
         if (selectedNodes.isEmpty()) {
             _error.value = "请先选择要测试的节点"
-            return
+            return false
         }
         if (GlobalTestExecution.isFetching()) {
             _error.value = GlobalTestExecution.fetchingHint()
-            return
+            return false
         }
-        if (!GlobalTestExecution.tryStart("解锁测试")) {
+        if (!GlobalTestExecution.tryStart("主流站解锁测试")) {
             _error.value = GlobalTestExecution.busyHint()
-            return
+            return false
         }
 
         _isRunning.value = true
@@ -179,78 +182,18 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
             val completed = AtomicInteger(0)
             val total = selectedNodes.size
             try {
-                _progressText.value = "流媒体测试中 (0/$total, 并发=$concurrency)"
+                _progressText.value = "主流站解锁测试中 (0/$total, 并发=$concurrency)"
                 coroutineScope {
                     val semaphore = Semaphore(concurrency)
                     selectedNodes.map { node ->
                         async(Dispatchers.IO) {
                             semaphore.withPermit {
                                 if (!isActive) return@withPermit
-
-                                updateResult(node.id, UnlockResultStatus.RUNNING, "测试中...", "", 0L)
-                                Log.d(tag, "Testing node: ${node.getDisplayName()}")
-
-                                val port = pickFreePort()
-                                val session = UnlockTestManager.createSession(getApplication(), node, port)
-                                activeSessions[node.id] = session
-
-                                val started = session.start()
-                                if (!started) {
-                                    Log.e(tag, "Failed to start proxy for node: ${node.getDisplayName()}")
-                                    val now = System.currentTimeMillis()
-                                    updateResult(node.id, UnlockResultStatus.FAILED, "启动测试代理失败", "", now)
-                                    activeSessions.remove(node.id)
-                                    val done = completed.incrementAndGet()
-                                    _progressText.value = "流媒体测试中 ($done/$total, 并发=$concurrency)"
-                                    return@withPermit
-                                }
-
                                 try {
-                                    val result = try {
-                                        UnlockTestsRunner.run(
-                                            context = getApplication(),
-                                            args = listOf(
-                                                "-socks-proxy", "socks5://127.0.0.1:$port",
-                                                "-f", "0",
-                                                "-L", "zh",
-                                                "-b=false",
-                                                "-s=false"
-                                            ),
-                                            timeoutSeconds = 120
-                                        )
-                                    } catch (e: Exception) {
-                                        Log.e(tag, "Unlock runner crashed: ${e.message}", e)
-                                        UnlockTestsRunner.Result(
-                                            exitCode = -3,
-                                            stdout = "runner exception: ${e.message}"
-                                        )
-                                    }
-
-                                    val status = if (result.exitCode == 0) UnlockResultStatus.SUCCESS else UnlockResultStatus.FAILED
-                                    val highlights = extractHighlights(result.stdout)
-                                    val summary = summarizeOutput(result.exitCode, highlights)
-                                    val now = System.currentTimeMillis()
-                                    logStructuredResult(
-                                        nodeName = node.getDisplayName(),
-                                        exitCode = result.exitCode,
-                                        status = status,
-                                        summary = summary,
-                                        highlights = highlights,
-                                        raw = result.stdout
-                                    )
-                                    Log.d(tag, "Node done: ${node.getDisplayName()}, code=${result.exitCode}, summary=$summary")
-                                    updateResult(
-                                        node.id,
-                                        status,
-                                        summary,
-                                        buildDisplayOutput(node.getDisplayName(), result.exitCode, summary, highlights, now, result.stdout),
-                                        now
-                                    )
+                                    executeNodeTest(node, "测试中...")
                                 } finally {
-                                    session.stop()
-                                    activeSessions.remove(node.id)
                                     val done = completed.incrementAndGet()
-                                    _progressText.value = "流媒体测试中 ($done/$total, 并发=$concurrency)"
+                                    _progressText.value = "主流站解锁测试中 ($done/$total, 并发=$concurrency)"
                                 }
                             }
                         }
@@ -266,6 +209,165 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
                 runningJob = null
                 Log.i(tag, "Unlock tests finished")
                 GlobalTestExecution.finish()
+            }
+        }
+        return true
+    }
+
+    fun retryTest(nodeId: String): Boolean {
+        if (_isRunning.value) {
+            _error.value = "当前主流站解锁测试尚未结束，请稍后重试"
+            return false
+        }
+        val failedResult = _results.value.firstOrNull { it.nodeId == nodeId }
+        if (failedResult?.status != UnlockResultStatus.FAILED) return false
+
+        val node = nodes.value.firstOrNull { it.id == nodeId }
+        if (node == null) {
+            _error.value = "该节点已不存在，无法重新测试"
+            return false
+        }
+        if (GlobalTestExecution.isFetching()) {
+            _error.value = GlobalTestExecution.fetchingHint()
+            return false
+        }
+        if (!GlobalTestExecution.tryStart("主流站解锁重试")) {
+            _error.value = GlobalTestExecution.busyHint()
+            return false
+        }
+
+        _isRunning.value = true
+        _progressText.value = "正在重新测试：${node.getDisplayName()}"
+        runningJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                executeNodeTest(node, "重新测试中...")
+            } finally {
+                activeSessions.remove(node.id)?.let { session ->
+                    runCatching { session.stop() }
+                }
+                _progressText.value = null
+                _isRunning.value = false
+                runningJob = null
+                GlobalTestExecution.finish()
+            }
+        }
+        return true
+    }
+
+    private suspend fun executeNodeTest(node: Node, runningSummary: String) {
+        prepareResultForRun(node.id, runningSummary)
+        Log.d(tag, "Testing node: ${node.getDisplayName()}")
+
+        activeSessions.remove(node.id)?.let { staleSession ->
+            runCatching { staleSession.stop() }
+        }
+
+        val port = try {
+            pickFreePort()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to allocate proxy port for node: ${node.getDisplayName()}", e)
+            updateResult(
+                node.id,
+                UnlockResultStatus.FAILED,
+                "启动测试代理失败：无法分配本地端口",
+                "",
+                System.currentTimeMillis()
+            )
+            return
+        }
+        val session = UnlockTestManager.createSession(getApplication(), node, port)
+        activeSessions[node.id] = session
+
+        try {
+            if (!session.start()) {
+                Log.e(tag, "Failed to start proxy for node: ${node.getDisplayName()}")
+                updateResult(
+                    node.id,
+                    UnlockResultStatus.FAILED,
+                    "启动测试代理失败",
+                    "",
+                    System.currentTimeMillis()
+                )
+                return
+            }
+
+            val testStartedAt = System.currentTimeMillis()
+            val result = try {
+                UnlockTestsRunner.run(
+                    context = getApplication(),
+                    args = listOf(
+                        "-socks-proxy", "socks5://127.0.0.1:$port",
+                        "-f", "0",
+                        "-L", "zh",
+                        "-b=false",
+                        "-s=false"
+                    ),
+                    timeoutSeconds = 120
+                )
+            } catch (e: Exception) {
+                Log.e(tag, "Unlock runner crashed: ${e.message}", e)
+                UnlockTestsRunner.Result(
+                    exitCode = -3,
+                    stdout = "runner exception: ${e.message}"
+                )
+            }
+
+            val status = if (result.exitCode == 0) {
+                UnlockResultStatus.SUCCESS
+            } else {
+                UnlockResultStatus.FAILED
+            }
+            val highlights = extractHighlights(result.stdout)
+            val summary = summarizeOutput(result.exitCode, highlights)
+            val now = System.currentTimeMillis()
+            logStructuredResult(
+                nodeName = node.getDisplayName(),
+                exitCode = result.exitCode,
+                status = status,
+                summary = summary,
+                highlights = highlights,
+                raw = result.stdout
+            )
+            Log.d(tag, "Node done: ${node.getDisplayName()}, code=${result.exitCode}, summary=$summary")
+            updateResult(
+                node.id,
+                status,
+                summary,
+                buildDisplayOutput(
+                    node.getDisplayName(),
+                    result.exitCode,
+                    summary,
+                    highlights,
+                    now,
+                    result.stdout
+                ),
+                now,
+                exitCode = result.exitCode,
+                durationMillis = now - testStartedAt,
+                fullOutput = result.stdout
+            )
+        } finally {
+            runCatching { session.stop() }
+            activeSessions.remove(node.id, session)
+        }
+    }
+
+    private fun prepareResultForRun(nodeId: String, summary: String) {
+        _results.update { list ->
+            list.map { item ->
+                if (item.nodeId == nodeId) {
+                    item.copy(
+                        status = UnlockResultStatus.RUNNING,
+                        summary = summary,
+                        rawOutput = "",
+                        testedAt = 0L,
+                        exitCode = null,
+                        durationMillis = null,
+                        fullOutput = ""
+                    )
+                } else {
+                    item
+                }
             }
         }
     }
@@ -299,7 +401,10 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
         status: UnlockResultStatus,
         summary: String,
         rawOutput: String,
-        testedAt: Long
+        testedAt: Long,
+        exitCode: Int? = null,
+        durationMillis: Long? = null,
+        fullOutput: String = ""
     ) {
         _results.update { list ->
             list.map { item ->
@@ -308,7 +413,10 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
                         status = status,
                         summary = summary,
                         rawOutput = if (rawOutput.isBlank()) item.rawOutput else rawOutput,
-                        testedAt = if (testedAt > 0L) testedAt else item.testedAt
+                        testedAt = if (testedAt > 0L) testedAt else item.testedAt,
+                        exitCode = exitCode ?: item.exitCode,
+                        durationMillis = durationMillis ?: item.durationMillis,
+                        fullOutput = if (fullOutput.isBlank()) item.fullOutput else fullOutput
                     )
                 } else {
                     item
@@ -366,12 +474,13 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun extractHighlights(output: String): List<String> {
         if (output.isBlank()) return emptyList()
+        val ipv4Output = ipv4OnlyOutput(output)
         val keywords = listOf(
             "Netflix", "YouTube", "Disney", "Prime", "HBO", "TikTok", "ChatGPT", "OpenAI",
             "Dazn", "DAZN", "Spotify", "TVB", "Abema", "Bilibili", "区域", "Region", "解锁",
             "Unlocked", "Available", "No", "Yes"
         )
-        val list = output.lineSequence()
+        val list = ipv4Output.lineSequence()
             .map { cleanUtLine(it) }
             .filter { it.isNotEmpty() }
             .filter { line -> keywords.any { key -> line.contains(key, ignoreCase = true) } }
@@ -391,6 +500,22 @@ class UnlockTestViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
         return list
+    }
+
+    private fun ipv4OnlyOutput(output: String): String {
+        val lines = output.lines()
+        val ipv4Start = lines.indexOfFirst {
+            cleanUtLine(it).matches(Regex("^IPv4\\s*:?$", RegexOption.IGNORE_CASE))
+        }
+        if (ipv4Start < 0) return output
+        val ipv6Start = lines.withIndex()
+            .firstOrNull { (index, line) ->
+                index > ipv4Start &&
+                    cleanUtLine(line).matches(Regex("^IPv6\\s*:?$", RegexOption.IGNORE_CASE))
+            }
+            ?.index
+            ?: lines.size
+        return lines.subList(ipv4Start + 1, ipv6Start).joinToString("\n")
     }
 
     private fun buildDisplayOutput(

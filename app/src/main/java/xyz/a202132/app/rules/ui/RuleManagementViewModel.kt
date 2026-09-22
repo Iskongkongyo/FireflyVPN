@@ -38,6 +38,10 @@ class RuleManagementViewModel(application: Application) : AndroidViewModel(appli
     val updateStages = _updateStages.asStateFlow()
     private val _events = MutableSharedFlow<RuleOperationEvent>(extraBufferCapacity = 4)
     val events = _events.asSharedFlow()
+    private val _hasChanges = MutableStateFlow(false)
+    val hasChanges = _hasChanges.asStateFlow()
+    private val _pendingOperationCount = MutableStateFlow(0)
+    val pendingOperationCount = _pendingOperationCount.asStateFlow()
 
     val rules = combine(repository.routingOptions, revision) { options, _ ->
         withContext(Dispatchers.IO) { repository.states(options) }
@@ -56,32 +60,64 @@ class RuleManagementViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun setEnabled(ruleId: String, enabled: Boolean) {
-        viewModelScope.launch {
+        launchTracked {
             runCatching { repository.setEnabled(ruleId, enabled) }
-                .onSuccess { _events.emit(RuleOperationEvent(RuleOperation.TOGGLE, true)) }
+                .onSuccess {
+                    _hasChanges.value = true
+                    _events.emit(RuleOperationEvent(RuleOperation.TOGGLE, true))
+                }
                 .onFailure { _events.emit(RuleOperationEvent(RuleOperation.TOGGLE, false)) }
         }
     }
 
     fun update(ruleId: String) {
         if (_updateStages.value[ruleId] != null) return
-        viewModelScope.launch {
-            setStage(ruleId, RuleUpdateStage.CHECKING)
-            val result = repository.update(ruleId) { stage -> setStage(ruleId, stage) }
-            setStage(ruleId, null)
-            if (result.isSuccess) revision.value++
-            _events.emit(RuleOperationEvent(RuleOperation.UPDATE, result.isSuccess))
+        setStage(ruleId, RuleUpdateStage.CHECKING)
+        launchTracked {
+            try {
+                val result = repository.update(ruleId) { stage -> setStage(ruleId, stage) }
+                if (result.isSuccess) {
+                    revision.value++
+                    _hasChanges.value = true
+                }
+                _events.emit(RuleOperationEvent(RuleOperation.UPDATE, result.isSuccess))
+            } finally {
+                setStage(ruleId, null)
+            }
         }
     }
 
     fun restore(ruleId: String) {
         if (_updateStages.value[ruleId] != null) return
+        setStage(ruleId, RuleUpdateStage.RESTORING)
+        launchTracked {
+            try {
+                val result = repository.restore(ruleId) { stage -> setStage(ruleId, stage) }
+                if (result.isSuccess) {
+                    revision.value++
+                    _hasChanges.value = true
+                }
+                _events.emit(RuleOperationEvent(RuleOperation.RESTORE, result.isSuccess))
+            } finally {
+                setStage(ruleId, null)
+            }
+        }
+    }
+
+    fun consumeChanges(): Boolean {
+        val changed = _hasChanges.value
+        _hasChanges.value = false
+        return changed
+    }
+
+    private fun launchTracked(block: suspend () -> Unit) {
+        _pendingOperationCount.value++
         viewModelScope.launch {
-            setStage(ruleId, RuleUpdateStage.RESTORING)
-            val result = repository.restore(ruleId) { stage -> setStage(ruleId, stage) }
-            setStage(ruleId, null)
-            if (result.isSuccess) revision.value++
-            _events.emit(RuleOperationEvent(RuleOperation.RESTORE, result.isSuccess))
+            try {
+                block()
+            } finally {
+                _pendingOperationCount.value = (_pendingOperationCount.value - 1).coerceAtLeast(0)
+            }
         }
     }
 

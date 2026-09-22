@@ -6,6 +6,14 @@ object AppRoute {
     const val NODE_LIST = "node_list"
     const val NETWORK_TOOLBOX = "network_toolbox"
     const val UNLOCK_TEST = "unlock_test"
+    const val UNLOCK_TEST_RESULT = "unlock_test_result"
+    const val UNLOCK_TEST_DETAIL_NODE_ARGUMENT = "nodeId"
+    const val UNLOCK_TEST_DETAIL_IP_VERSION_ARGUMENT = "ipVersion"
+    const val UNLOCK_TEST_DETAIL =
+        "unlock_test_detail/{$UNLOCK_TEST_DETAIL_NODE_ARGUMENT}/{$UNLOCK_TEST_DETAIL_IP_VERSION_ARGUMENT}"
+    const val AUTO_TEST_RESULT = "auto_test_result"
+    const val AUTO_TEST_DETAIL_ARGUMENT = "nodeId"
+    const val AUTO_TEST_DETAIL = "auto_test_detail/{$AUTO_TEST_DETAIL_ARGUMENT}"
     const val OTHER_CONFIG = "other_config"
     const val LAN_PROXY = "lan_proxy"
     const val QR_SCANNER = "qr_scanner"
@@ -20,4 +28,7 @@ object AppRoute {
 
     fun ruleDetail(ruleId: String): String = "rule_detail/$ruleId"
     fun editSubscriptionGroup(groupId: String): String = "subscription_group_edit/$groupId"
+    fun autoTestDetail(nodeId: String): String = "auto_test_detail/$nodeId"
+    fun unlockTestDetail(nodeId: String, ipVersion: String): String =
+        "unlock_test_detail/$nodeId/$ipVersion"
 }
